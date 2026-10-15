@@ -2,7 +2,7 @@
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.3.0** has been validated in VS Code with real quotas, countdowns, historical charts, combined filters, and persistence. The interface is built with React 19.
+Version **0.3.1** hardens the validated v0.3.0 baseline with bounded App Server recovery, stale-data labeling, safer storage recovery, stronger deduplication, and expanded automated coverage. The interface is built with React 19.
 
 ## Features
 
@@ -13,15 +13,17 @@ Version **0.3.0** has been validated in VS Code with real quotas, countdowns, hi
 - Persist quota samples and normalized session entities in SQLite, with local JSON fallback for runtimes without `node:sqlite`.
 - Deduplicate repeated observations, retain indexed history across restarts, and keep credentials under Codex CLI's control.
 
-No public dashboard screenshot is included yet because the available captures contain account or project data. A sanitized screenshot can be added later.
+![Codex Insights dashboard showing synthetic quota and token data](docs/assets/dashboard-demo.png)
+
+*Demo dashboard with synthetic data.*
 
 ## Requirements and installation
 
 - Visual Studio Code **1.90+**.
-- Codex CLI with `codex app-server --stdio` (verified with CLI **0.162.1**).
+- Codex CLI with `codex app-server --stdio` (real-account baseline verified with CLI **0.162.1**; account and quota reads also verified locally with **0.163.0**).
 - A ChatGPT login in Codex CLI to display ChatGPT plan quotas. API-key accounts do not expose those plan quotas.
 
-Install the v0.3.0 VSIX from the GitHub release using **Extensions → … → Install from VSIX…**, reload VS Code, then run **Codex Insights: Open Dashboard** from the Command Palette. The extension identifier is `codex-insights-local.codex-insights`.
+Install the latest reviewed VSIX using **Extensions → … → Install from VSIX…**, reload VS Code, then run **Codex Insights: Open Dashboard** from the Command Palette. The extension identifier remains `codex-insights-local.codex-insights`, so 0.3.1 upgrades 0.3.0 without changing its storage location.
 
 To sign in, run `codex login` and complete the browser flow, or use **Codex Insights: Sign in with ChatGPT**. Check CLI login state with `codex login status`. Codex Insights delegates authentication to Codex App Server; it does not read `auth.json` or store access tokens.
 
@@ -35,9 +37,10 @@ npm run typecheck
 npm test
 npm run build
 npm run package
+npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.3.0.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development.
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.3.1.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the 0.3.1 performance baseline](docs/PERFORMANCE_BASELINE_0.3.1.md).
 
 ## Architecture and data sources
 
@@ -66,7 +69,7 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 
 ## Testing and troubleshooting
 
-`npm test` runs simulated JSON-RPC, error and reconnection, SQLite migration, session-index, deduplication, filter, countdown, message-boundary, lifecycle, and React rendering tests. These tests do not generate model usage. The v0.3.0 dashboard was also manually validated in VS Code for real quotas, countdowns, charts, all four filters, and persistence.
+`npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, and React rendering tests. These tests do not generate model usage. The v0.3.0 dashboard baseline was manually validated in VS Code for real quotas, countdowns, charts, all four filters, and persistence; 0.3.1 still requires a final manual real-account smoke test before release.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 
@@ -74,14 +77,14 @@ If quotas are unavailable, check `codex --version`, `codex app-server --help`, `
 
 - A changed JSONL file is reanalyzed in full to preserve cumulative-counter semantics. Future versions can use byte-offset indexing.
 - The dashboard limits each view to 250 session rows and 500 time points for responsiveness.
-- Custom date ranges, alerts, predictions, and exports are planned, not present in v0.3.0.
-- A sanitized screenshot and broader end-to-end VS Code automation are planned for future releases.
+- Custom date ranges, alerts, predictions, and exports are planned, not present in v0.3.1.
+- Broader end-to-end VS Code automation remains planned.
 
 New observability providers should emit typed, timestamped observations with explicit provenance. Keep official quotas separate from observed and estimated metrics, add a schema migration for persisted fields, and expose only calculated views to the Webview.
 
 ## Contributing and security
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull requests. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md); do not publish credentials or sensitive records in Issues.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull requests. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md); do not publish credentials or sensitive records in Issues. The detailed 0.3.1 review is in [docs/SECURITY_AUDIT_0.3.1.md](docs/SECURITY_AUDIT_0.3.1.md).
 
 ## License
 

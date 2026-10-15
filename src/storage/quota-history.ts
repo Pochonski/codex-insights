@@ -8,28 +8,34 @@ interface DatabaseLike {exec(sql:string):void;prepare(sql:string):{run(...args:(
 const RETENTION=90*86400;
 export class QuotaHistoryStore {
  private db:DatabaseLike|null=null;private fallback:Row[]|null=null;
+ private _error:string|null=null;
  private readonly filepath:string;
  constructor(private readonly storageDirectory:string){this.filepath=path.join(storageDirectory,'quota-history.json');}
  get mode(){return this.db?'sqlite':this.fallback?'json':'unavailable';}
+ get error(){return this._error;}
  async open():Promise<boolean>{
   if(this.db||this.fallback)return true;
   mkdirSync(this.storageDirectory,{recursive:true,mode:0o700});
-  try{const sqlite=await import('node:sqlite');const db=new sqlite.DatabaseSync(path.join(this.storageDirectory,'insights.sqlite')) as unknown as DatabaseLike;
-   db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+  let sqlite:typeof import('node:sqlite')|null=null;
+  try{sqlite=await import('node:sqlite');}catch(error){const code=(error as {code?:string}).code;if(code!=='ERR_UNKNOWN_BUILTIN_MODULE'&&code!=='ERR_MODULE_NOT_FOUND')throw error;}
+  if(sqlite){let db:DatabaseLike|null=null;try{db=new sqlite.DatabaseSync(path.join(this.storageDirectory,'insights.sqlite')) as unknown as DatabaseLike;
+   db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;
+    CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS quota_samples(id INTEGER PRIMARY KEY AUTOINCREMENT,account_hash TEXT NOT NULL,observed_at INTEGER NOT NULL,limit_id TEXT NOT NULL,window_kind TEXT NOT NULL,duration_mins INTEGER,used_percent REAL NOT NULL CHECK(used_percent BETWEEN 0 AND 100),reset_at INTEGER,UNIQUE(account_hash,observed_at,limit_id,window_kind));
     CREATE INDEX IF NOT EXISTS idx_quota_history ON quota_samples(account_hash,observed_at);
-    INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,strftime('%s','now'));`);
+    INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,strftime('%s','now')); COMMIT;`);
    // Import a prior JSON fallback when a newer VS Code runtime gains node:sqlite.
    if(existsSync(this.filepath)){
     try{const prior:unknown=JSON.parse(readFileSync(this.filepath,'utf8'));
-     if(Array.isArray(prior)){const insert=db.prepare('INSERT OR IGNORE INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?)');
-      for(const item of prior)if(isRow(item))insert.run(item.accountHash,item.observedAt,item.limitId,item.windowKind,item.windowDurationMins,item.usedPercent,item.resetAt);
+     if(!Array.isArray(prior))throw new Error('Invalid quota history format');
+     const insert=db.prepare('INSERT OR IGNORE INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?)');db.exec('BEGIN IMMEDIATE');
+     try{for(const item of prior)if(isRow(item))insert.run(item.accountHash,item.observedAt,item.limitId,item.windowKind,item.windowDurationMins,item.usedPercent,item.resetAt);db.exec('COMMIT');}catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}
      }
-    }catch{/* Keep the original fallback file for recovery. */}
+    catch{try{db.close();}catch{}this._error='The quota history JSON is invalid. The original file was preserved.';throw new Error(this._error);}
    }
-   this.db=db;return true;
-  }catch{/* Node runtime without node:sqlite */}
-  try{const raw=existsSync(this.filepath)?JSON.parse(readFileSync(this.filepath,'utf8')) as unknown:[];this.fallback=Array.isArray(raw)?raw.filter(isRow):[];}catch{this.fallback=[];}
+   this.db=db;this._error=null;return true;
+  }catch(error){try{db?.close();}catch{}if(this._error)throw error;this._error='The SQLite quota database could not be opened. The original file was preserved.';throw new Error(this._error);}}
+  try{const raw=existsSync(this.filepath)?JSON.parse(readFileSync(this.filepath,'utf8')) as unknown:[];if(!Array.isArray(raw))throw new Error();this.fallback=raw.filter(isRow);this._error=null;}catch{this._error='The quota history JSON is invalid. The original file was preserved.';throw new Error(this._error);}
   return true;
  }
  static accountHash(accountId:string){return createHash('sha256').update(accountId).digest('hex');}
@@ -37,7 +43,7 @@ export class QuotaHistoryStore {
   if(!accountId||status.state!=='connected')return;
   const accountHash=QuotaHistoryStore.accountHash(accountId),now=Math.floor(Date.now()/60000)*60;
   const rows:Row[]=[];for(const bucket of status.buckets)for(const w of bucket.windows){const resetAt=w.resetAt?Math.floor(Date.parse(w.resetAt)/1000):null;rows.push({accountHash,observedAt:now,limitId:bucket.id,windowKind:w.kind,windowDurationMins:w.durationMinutes,usedPercent:w.usedPercent,resetAt:Number.isFinite(resetAt)?resetAt:null});}
-  if(this.db){const insert=this.db.prepare('INSERT INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_hash,observed_at,limit_id,window_kind) DO UPDATE SET used_percent=excluded.used_percent,reset_at=excluded.reset_at');for(const r of rows)insert.run(r.accountHash,r.observedAt,r.limitId,r.windowKind,r.windowDurationMins,r.usedPercent,r.resetAt);this.db.prepare('DELETE FROM quota_samples WHERE observed_at < ?').run(now-RETENTION);}
+  if(this.db){const insert=this.db.prepare('INSERT INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_hash,observed_at,limit_id,window_kind) DO UPDATE SET used_percent=excluded.used_percent,reset_at=excluded.reset_at');this.db.exec('BEGIN IMMEDIATE');try{for(const r of rows)insert.run(r.accountHash,r.observedAt,r.limitId,r.windowKind,r.windowDurationMins,r.usedPercent,r.resetAt);this.db.prepare('DELETE FROM quota_samples WHERE observed_at < ?').run(now-RETENTION);this.db.exec('COMMIT');}catch(error){try{this.db.exec('ROLLBACK');}catch{}throw error;}}
   else if(this.fallback){const merged=new Map<string,Row>();for(const r of this.fallback.concat(rows))if(r.observedAt>=now-RETENTION)merged.set(`${r.accountHash}:${r.observedAt}:${r.limitId}:${r.windowKind}`,r);this.fallback=[...merged.values()].sort((a,b)=>a.observedAt-b.observedAt);const temp=this.filepath+'.tmp';writeFileSync(temp,JSON.stringify(this.fallback),{encoding:'utf8',mode:0o600});renameSync(temp,this.filepath);}
  }
  read(accountId:string|null,limitId:string,duration:number,sinceHours=24):QuotaPoint[]{
