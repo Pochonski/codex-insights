@@ -1,0 +1,88 @@
+# Codex Insights
+
+**Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
+
+Version **0.3.0** has been validated in VS Code with real quotas, countdowns, historical charts, combined filters, and persistence. The interface is built with React 19.
+
+## Features
+
+- Read real ChatGPT plan quota percentages and reset timestamps through the local Codex App Server, including the 5-hour and 7-day windows when available.
+- Show live countdowns without polling every second, and record real quota samples for historical charts.
+- Index local Codex JSONL sessions and analyze input, output, cached input, and reasoning output tokens.
+- Explore timestamped token charts, sessions, models, and projects with combined period, session, model, and project filters.
+- Persist quota samples and normalized session entities in SQLite, with local JSON fallback for runtimes without `node:sqlite`.
+- Deduplicate repeated observations, retain indexed history across restarts, and keep credentials under Codex CLI's control.
+
+No public dashboard screenshot is included yet because the available captures contain account or project data. A sanitized screenshot can be added later.
+
+## Requirements and installation
+
+- Visual Studio Code **1.90+**.
+- Codex CLI with `codex app-server --stdio` (verified with CLI **0.162.1**).
+- A ChatGPT login in Codex CLI to display ChatGPT plan quotas. API-key accounts do not expose those plan quotas.
+
+Install the v0.3.0 VSIX from the GitHub release using **Extensions → … → Install from VSIX…**, reload VS Code, then run **Codex Insights: Open Dashboard** from the Command Palette. The extension identifier is `codex-insights-local.codex-insights`.
+
+To sign in, run `codex login` and complete the browser flow, or use **Codex Insights: Sign in with ChatGPT**. Check CLI login state with `codex login status`. Codex Insights delegates authentication to Codex App Server; it does not read `auth.json` or store access tokens.
+
+## Development
+
+Use **Node.js 22** and npm. From this repository root:
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm run package
+```
+
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.3.0.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development.
+
+## Architecture and data sources
+
+| Directory | Responsibility |
+| --- | --- |
+| `src/extension` | Activation, commands, Status Bar, timers, Webview lifecycle, and cleanup. |
+| `src/providers` | Private `codex app-server --stdio` subprocess, JSON-RPC, login handoff, and quota normalization. |
+| `src/collectors` | Local JSONL discovery and persistent session index. |
+| `src/storage` | SQLite migrations and tables for quota samples, projects, models, sessions, token events, and import state. |
+| `src/analytics` | Aggregations, historical series, and combined filters. |
+| `src/webview` | React dashboard, countdowns, styles, and Content Security Policy. |
+| `src/protocol/generated` | TypeScript contracts generated from Codex App Server. |
+
+Quota percentages are **official account-level values** reported by App Server. Token counters are **locally observed** in Codex session files; they are not API billing and cannot be used to infer ChatGPT quotas. `cached_input_tokens` is already part of `input_tokens`. Reasoning output is displayed separately and is not added again to output totals. Token filters never change global quota percentages.
+
+All history is stored under VS Code's extension `globalStorageUri`, outside the source tree. SQLite records a SHA-256 account identifier rather than the raw account ID. JSON fallbacks are written atomically. Session records store metadata and token counts, not conversation content. The Webview receives no credentials, cannot access local files directly, and has a restrictive CSP. There is no project-owned server, external telemetry, or Marketplace publishing workflow.
+
+## Configuration
+
+| Setting | Purpose |
+| --- | --- |
+| `codexInsights.sessionsPath` | Override `CODEX_HOME/sessions` or `~/.codex/sessions`. |
+| `codexInsights.refreshSeconds` | Local session scan interval, minimum 15 seconds. |
+| `codexInsights.codexExecutable` | Codex CLI executable; default `codex`. |
+| `codexInsights.quotaRefreshSeconds` | Quota polling interval, minimum 60 seconds. |
+
+## Testing and troubleshooting
+
+`npm test` runs simulated JSON-RPC, error and reconnection, SQLite migration, session-index, deduplication, filter, countdown, message-boundary, lifecycle, and React rendering tests. These tests do not generate model usage. The v0.3.0 dashboard was also manually validated in VS Code for real quotas, countdowns, charts, all four filters, and persistence.
+
+If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
+
+## Known limitations and roadmap
+
+- A changed JSONL file is reanalyzed in full to preserve cumulative-counter semantics. Future versions can use byte-offset indexing.
+- The dashboard limits each view to 250 session rows and 500 time points for responsiveness.
+- Custom date ranges, alerts, predictions, and exports are planned, not present in v0.3.0.
+- A sanitized screenshot and broader end-to-end VS Code automation are planned for future releases.
+
+New observability providers should emit typed, timestamped observations with explicit provenance. Keep official quotas separate from observed and estimated metrics, add a schema migration for persisted fields, and expose only calculated views to the Webview.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull requests. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md); do not publish credentials or sensitive records in Issues.
+
+## License
+
+[MIT](LICENSE). Third-party notices for the bundled React runtime are in `media/licenses/`.

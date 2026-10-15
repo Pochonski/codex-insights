@@ -1,0 +1,88 @@
+{
+  "name": "codex-insights",
+  "displayName": "Codex Insights",
+  "description": "Local-first Codex analytics with ChatGPT plan quotas, history, and React dashboard",
+  "version": "0.3.0",
+  "publisher": "codex-insights-local",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexInsights.openDashboard",
+        "title": "Codex Insights: Open Dashboard"
+      },
+      {
+        "command": "codexInsights.refresh",
+        "title": "Codex Insights: Refresh"
+      },
+      {
+        "command": "codexInsights.signIn",
+        "title": "Codex Insights: Sign in with ChatGPT"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Insights",
+      "properties": {
+        "codexInsights.sessionsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Codex sessions directory; leave blank for CODEX_HOME/sessions or ~/.codex/sessions."
+        },
+        "codexInsights.refreshSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 15,
+          "description": "Refresh interval in seconds."
+        },
+        "codexInsights.codexExecutable": {
+          "type": "string",
+          "default": "codex",
+          "description": "Path to Codex CLI executable (must provide app-server subcommand)."
+        },
+        "codexInsights.quotaRefreshSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 60,
+          "description": "Refresh rate limit information via Codex App Server, in seconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build:extension && npm run build:webview",
+    "watch": "concurrently \"npm:build:extension -- --watch\" \"npm:build:webview -- --watch\"",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && vsce package --no-dependencies --out codex-insights-0.3.0.vsix",
+    "build:extension": "esbuild src/extension/index.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.js",
+    "build:webview": "esbuild src/webview/dashboard.js --bundle --platform=browser --format=iife --target=es2020 --minify --outfile=media/dashboard.js"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "concurrently": "^9.2.5",
+    "esbuild": "^0.28.2",
+    "jsdom": "^27.4.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pochonski/codex-insights.git"
+  }
+}

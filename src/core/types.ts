@@ -1,0 +1,3 @@
+export interface UsageEvent { id:string; fingerprint?:string; sessionId:string; timestamp:string; model?:string; project?:string; inputTokens:number; outputTokens:number; cachedInputTokens:number; reasoningOutputTokens:number; sourceFile:string; }
+export interface SessionSummary { id:string; project?:string; startedAt?:string; model?:string; events:number; inputTokens:number; outputTokens:number; cachedInputTokens:number; reasoningOutputTokens:number; }
+export interface DashboardData { scannedAt:string; filesScanned:number; events:UsageEvent[]; sessions:SessionSummary[]; total:{inputTokens:number;outputTokens:number;cachedInputTokens:number;reasoningOutputTokens:number}; warnings:string[]; }

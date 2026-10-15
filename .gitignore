@@ -1,0 +1,37 @@
+# Dependencies and generated output
+node_modules/
+dist/
+out/
+coverage/
+media/dashboard.js
+*.vsix
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Local Codex data, databases, credentials, and logs
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.jsonl
+.env
+.env.*
+**/auth.json
+*.log
+logs/
+.codex/
+
+# Local backups and extracted packages
+codex-insights-v0.3.0/
+codex-insights-backups/
+backups/
+*.bak
+*.tmp
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db

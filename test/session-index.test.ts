@@ -1,0 +1,27 @@
+import {describe,it,expect} from 'vitest';
+import {mkdtempSync,writeFileSync,rmSync,readFileSync,statSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {SessionIndex} from '../src/collectors/sessions';
+import {aggregate} from '../src/analytics/aggregate';
+const record=(n:number)=>JSON.stringify({timestamp:'2026-10-15T00:00:00Z',type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
+describe('persistent session index',()=>{
+ it('deduplicates unchanged files across scans and restarts, and handles truncation',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-index-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);const file=path.join(root,'session.jsonl'),state=path.join(dir,'state.json');writeFileSync(file,record(100)+'\n'+record(150)+'\n');let scan=await new SessionIndex(state).scan(root);expect(scan.events.map(e=>e.inputTokens)).toEqual([100,50]);scan=await new SessionIndex(state).scan(root);expect(scan.events).toHaveLength(2);writeFileSync(file,record(20)+'\n');scan=await new SessionIndex(state).scan(root);expect(scan.events.map(e=>e.inputTokens)).toEqual([20,100,50]);expect(readFileSync(state,'utf8')).not.toContain('total_token_usage');expect(statSync(state).mode&0o077).toBe(0);}finally{rmSync(dir,{recursive:true,force:true});}});
+});
+describe('unavailable sessions directory',()=>{
+ it('keeps previously indexed events when the root disappears',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-index-offline-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);writeFileSync(path.join(root,'session.jsonl'),record(10)+'\n');const index=new SessionIndex(path.join(dir,'index.json'));expect((await index.scan(root)).events).toHaveLength(1);await fs.rename(root,root+'-offline');const stale=await index.scan(root);expect(stale.events).toHaveLength(1);expect(stale.warnings[0]).toContain('unavailable');}finally{rmSync(dir,{recursive:true,force:true});}});
+});
+describe('SQLite session entities',()=>{
+ it('persists normalized events and restores the index if JSON fallback is missing',async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),'codex-sqlite-index-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);const file=path.join(root,'session.jsonl'),state=path.join(dir,'sessions-index.json');writeFileSync(file,JSON.stringify({type:'session_meta',payload:{id:'s1',cwd:'/projects/demo'}})+'\n'+JSON.stringify({type:'turn_context',payload:{model:'gpt-test'}})+'\n'+record(42)+'\n');const index=new SessionIndex(state);const first=await index.scan(root);expect(first.events[0]).toMatchObject({sessionId:'s1',model:'gpt-test',project:'/projects/demo',inputTokens:42});expect(index.storageMode).toContain('sqlite');index.close();
+   const sqlite=await import('node:sqlite');const db=new sqlite.DatabaseSync(path.join(dir,'insights.sqlite'));try{expect(db.prepare('SELECT COUNT(*) AS n FROM token_events').get()).toMatchObject({n:1});expect(db.prepare('SELECT COUNT(*) AS n FROM projects').get()).toMatchObject({n:1});expect(db.prepare('SELECT COUNT(*) AS n FROM models').get()).toMatchObject({n:1});expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toMatchObject({n:1});expect(db.prepare('SELECT version FROM schema_migrations WHERE version=2').get()).toMatchObject({version:2});}finally{db.close();}
+   await fs.unlink(state);const restored=new SessionIndex(state);try{expect((await restored.scan(root)).events[0].inputTokens).toBe(42);}finally{restored.close();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+ });
+});
+describe('historical session retention',()=>{
+ it('retains observed events when a JSONL file is removed',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-retain-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);const file=path.join(root,'s.jsonl');writeFileSync(file,record(25)+'\n');const index=new SessionIndex(path.join(dir,'index.json'));expect((await index.scan(root)).events).toHaveLength(1);await fs.unlink(file);expect((await index.scan(root)).events).toHaveLength(1);index.close();}finally{rmSync(dir,{recursive:true,force:true});}});
+});
+describe('rotated file copies',()=>{
+ it('counts identical observations only once across filenames',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-rotation-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);const content=JSON.stringify({type:'session_meta',payload:{id:'stable-session'}})+'\n'+record(90)+'\n';writeFileSync(path.join(root,'original.jsonl'),content);writeFileSync(path.join(root,'copy.jsonl'),content);const index=new SessionIndex(path.join(dir,'index.json'));try{const scan=await index.scan(root);expect(scan.events).toHaveLength(2);expect(aggregate(scan.events).total.inputTokens).toBe(90);}finally{index.close();}}finally{rmSync(dir,{recursive:true,force:true});}});
+});
