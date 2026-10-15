@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {QuotaHistoryStore} from '../src/storage/quota-history';
@@ -29,5 +29,10 @@ describe('quota history migration',()=>{
  });
 });
 describe('shared database migrations',()=>{
- it('adds session schema without replacing existing quota samples',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-schema-upgrade-'));const quota=new QuotaHistoryStore(dir);try{await quota.open();quota.save('account',status);quota.close();const {SessionDatabase}=await import('../src/storage/session-db');const sessionDb=new SessionDatabase(dir);expect(await sessionDb.open()).toBe(true);sessionDb.close();const reopened=new QuotaHistoryStore(dir);try{await reopened.open();expect(reopened.read('account','codex',300)).toHaveLength(1);}finally{reopened.close();}}finally{quota.close();rmSync(dir,{recursive:true,force:true});}});
+ it('adds session schema without replacing existing quota samples',async()=>{try{await import('node:sqlite');}catch{return;}const dir=mkdtempSync(path.join(tmpdir(),'codex-schema-upgrade-'));const quota=new QuotaHistoryStore(dir);try{await quota.open();quota.save('account',status);quota.close();const {SessionDatabase}=await import('../src/storage/session-db');const sessionDb=new SessionDatabase(dir);expect(await sessionDb.open()).toBe(true);sessionDb.close();const reopened=new QuotaHistoryStore(dir);try{await reopened.open();expect(reopened.read('account','codex',300)).toHaveLength(1);}finally{reopened.close();}}finally{quota.close();rmSync(dir,{recursive:true,force:true});}});
+});
+describe('storage recovery safety',()=>{
+ it('does not overwrite an invalid JSON fallback',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-quota-corrupt-json-'));const {writeFileSync}=await import('node:fs');const file=path.join(dir,'quota-history.json');writeFileSync(file,'{"incomplete"',{mode:0o600});const store=new QuotaHistoryStore(dir);try{await expect(store.open()).rejects.toThrow('preserved');expect(readFileSync(file,'utf8')).toBe('{"incomplete"');expect(()=>store.save('account',status)).not.toThrow();expect(readFileSync(file,'utf8')).toBe('{"incomplete"');}finally{store.close();rmSync(dir,{recursive:true,force:true});}});
+ it('keeps an invalid SQLite file intact and reports a recoverable error',async()=>{try{await import('node:sqlite');}catch{return;}const dir=mkdtempSync(path.join(tmpdir(),'codex-quota-corrupt-db-'));const {writeFileSync}=await import('node:fs');const file=path.join(dir,'insights.sqlite');writeFileSync(file,'not-a-sqlite-database',{mode:0o600});const before=readFileSync(file);const store=new QuotaHistoryStore(dir);try{await expect(store.open()).rejects.toThrow('preserved');expect(readFileSync(file)).toEqual(before);}finally{store.close();rmSync(dir,{recursive:true,force:true});}});
+ it('can apply the same migrations repeatedly',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-quota-idempotent-'));try{for(let i=0;i<2;i++){const store=new QuotaHistoryStore(dir);expect(await store.open()).toBe(true);store.close();}}finally{rmSync(dir,{recursive:true,force:true});}});
 });

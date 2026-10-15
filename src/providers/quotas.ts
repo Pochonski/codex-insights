@@ -4,15 +4,20 @@ import type {RateLimitSnapshot} from '../protocol/generated/v2/RateLimitSnapshot
 import type {RateLimitWindow} from '../protocol/generated/v2/RateLimitWindow';
 import type {LoginAccountResponse} from '../protocol/generated/v2/LoginAccountResponse';
 import type {CodexAppServerClient} from './app-server-client';
+import type {ConnectionState} from './app-server-client';
 
 export interface QuotaWindow {kind:'primary'|'secondary';durationMinutes:number|null;usedPercent:number;resetAt:string|null;}
 export interface QuotaBucket {id:string;name:string;model:string|null;windows:QuotaWindow[];}
 export interface QuotaStatus {
- state:'connected'|'signed-out'|'api-key'|'error'|'loading';
+ state:'connected'|'stale'|'signed-out'|'api-key'|'error'|'loading';
  plan:string|null; buckets:QuotaBucket[]; ordinaryUsageAllowed:boolean|null;
- fetchedAt:string|null; message:string|null;
+ fetchedAt:string|null; message:string|null; connectionState?:ConnectionState;
 }
 export const emptyQuota=(state:QuotaStatus['state']='loading',message:string|null=null):QuotaStatus=>({state,plan:null,buckets:[],ordinaryUsageAllowed:null,fetchedAt:null,message});
+export function staleQuota(previous:QuotaStatus,message:string,connectionState:ConnectionState='offline'):QuotaStatus{
+ if(!previous.fetchedAt||!previous.buckets.length)return {...emptyQuota('error',message),connectionState};
+ return {...previous,state:'stale',message,connectionState};
+}
 function normalizeWindow(kind:QuotaWindow['kind'],window:RateLimitWindow|null):QuotaWindow|null{
  if(!window||!Number.isFinite(window.usedPercent))return null;
  const secs=window.resetsAt;
@@ -31,7 +36,7 @@ export function normalizeQuotas(account:GetAccountResponse,limits:GetAccountRate
  const snapshots=entries.length?entries:legacy?[[legacy.limitId||'codex',legacy] as const]:[];
  const buckets=snapshots.map(([id,s])=>bucket(id,s)).filter(b=>b.windows.length>0);
  const plan=account.account.planType==='unknown'?legacy?.planType:account.account.planType;
- return {state:'connected',plan:plan||null,buckets,ordinaryUsageAllowed:typeof limits?.ordinaryUsageAllowed==='boolean'?limits.ordinaryUsageAllowed:null,fetchedAt:new Date().toISOString(),message:buckets.length?null:'No quota windows were returned by Codex'};
+ return {state:'connected',plan:plan||null,buckets,ordinaryUsageAllowed:typeof limits?.ordinaryUsageAllowed==='boolean'?limits.ordinaryUsageAllowed:null,fetchedAt:new Date().toISOString(),message:buckets.length?null:'No quota windows were returned by Codex',connectionState:'connected'};
 }
 export class CodexQuotaProvider {
  constructor(private readonly rpc:CodexAppServerClient){}

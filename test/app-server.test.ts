@@ -1,10 +1,11 @@
 import {describe,it,expect} from 'vitest';
-import {mkdtempSync,writeFileSync,chmodSync,rmSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,chmodSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {CodexAppServerClient} from '../src/providers/app-server-client';
 import {CodexQuotaProvider} from '../src/providers/quotas';
 const SERVER=`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path'),started=path.join(__dirname,'started');fs.writeFileSync(started,String((Number(fs.existsSync(started)?fs.readFileSync(started,'utf8'):0)||0)+1));
 const readline=require('node:readline');
 const input=readline.createInterface({input:process.stdin});
 input.on('line',(line)=>{
@@ -28,6 +29,7 @@ describe('Codex App Server stdio transport',()=>{
    const result=await provider.fetch();
    expect(result.status.state).toBe('connected');
    expect(result.status.buckets[0].windows[0].usedPercent).toBe(50);
+   await Promise.all([provider.fetch(),provider.fetch()]);expect(readFileSync(path.join(dir,'started'),'utf8')).toBe('1');
    const login=await provider.beginChatGptLogin();expect(login.url).toContain('auth.openai.com');
   }finally{client.dispose();rmSync(dir,{recursive:true,force:true});}
  },10000);

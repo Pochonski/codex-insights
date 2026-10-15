@@ -2,7 +2,7 @@ import type {QuotaStatus} from '../providers/quotas';
 import type {QuotaPoint} from '../storage/quota-history';
 import {normalizeFilters,type Filters} from './filters';
 export type WebviewMessage={command:'ready'|'filters';filters:Filters}|{command:'login'|'refresh'};
-export type DashboardSnapshot={type:'snapshot';quota:QuotaStatus;analytics:ReturnType<typeof import('../analytics/views').buildAnalyticsView>;histories:{limitId:string;durationMinutes:number;points:QuotaPoint[]}[];storageMode:string};
+export type DashboardSnapshot={type:'snapshot';quota:QuotaStatus;analytics:ReturnType<typeof import('../analytics/views').buildAnalyticsView>;histories:{limitId:string;durationMinutes:number;points:QuotaPoint[]}[];storageMode:string;storageWarning?:string|null};
 export function parseWebviewMessage(value:unknown):WebviewMessage|null{
  if(!value||typeof value!=='object'||Array.isArray(value))return null;
  const v=value as Record<string,unknown>;

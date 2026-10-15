@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {normalizeQuotas,emptyQuota} from '../src/providers/quotas';
+import {normalizeQuotas,emptyQuota,staleQuota} from '../src/providers/quotas';
 import type {GetAccountResponse} from '../src/protocol/generated/v2/GetAccountResponse';
 import type {GetAccountRateLimitsResponse} from '../src/protocol/generated/v2/GetAccountRateLimitsResponse';
 import {aggregate} from '../src/analytics/aggregate';
@@ -28,6 +28,7 @@ describe('quota adapter',()=>{
   expect(html).toContain("default-src 'none'");expect(html).toContain("connect-src 'none'");expect(html).not.toContain('unsafe-inline');
  });
  it('uses explicit signed-out state',()=>expect(emptyQuota('signed-out').state).toBe('signed-out'));
+ it('retains the last successful sample with an explicit stale state',()=>{const fresh=normalizeQuotas(account,limits),stale=staleQuota(fresh,'offline');expect(stale.state).toBe('stale');expect(stale.fetchedAt).toBe(fresh.fetchedAt);expect(stale.buckets).toEqual(fresh.buckets);});
 });
 describe('incomplete App Server responses',()=>{
  it('handles missing quota snapshots as an empty connected state',()=>{const result=normalizeQuotas(account,{ordinaryUsageAllowed:true,rateLimitsByLimitId:null} as unknown as GetAccountRateLimitsResponse);expect(result.state).toBe('connected');expect(result.buckets).toEqual([]);});
