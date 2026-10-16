@@ -12,7 +12,7 @@ import {createRoot} from "react-dom/client";
  const date=v=>{const t=Date.parse(v);return Number.isFinite(t)?new Date(t).toLocaleString():'Unavailable';};
  const hhmm=v=>new Date(v).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
  const percent=n=>Math.min(100,Math.max(0,Number(n)||0));
- const initialFilters={period:'7d',session:'',model:'',project:''};
+ const initialFilters={period:'7d',session:'',model:'',project:'',startDate:'',endDate:''};
  const persisted=vscode.getState()||{};
  const colorFor=p=>p>=95?'crit':p>=80?'warn':'good';
  const palette={input:'#5b9cf5',output:'#36c99b',used:'#f2b25c',cached:'#a495f9',reasoning:'#ee83c5'};
@@ -69,7 +69,8 @@ import {createRoot} from "react-dom/client";
  }
  function projectName(p){if(!p)return 'Unknown';return p.replace(/[\\/]+$/,'').split(/[\\/]/).pop()||p;}
  function selectField(label,value,options,onChange){return h('div',{className:'field'},h('label',null,label),h('select',{value:value||'',onChange:e=>onChange(e.target.value),'aria-label':label},options.map(o=>h('option',{key:o.value,value:o.value},o.label))));}
- function rangeOptions(){return [['24h','Last 24 hours'],['7d','Last 7 days'],['30d','Last 30 days'],['all','All available']].map(x=>({value:x[0],label:x[1]}));}
+ function dateField(label,value,onChange){return h('div',{className:'field'},h('label',null,label),h('input',{type:'date',value:value||'',onChange:e=>onChange(e.target.value),'aria-label':label}));}
+ function rangeOptions(){return [['24h','Last 24 hours'],['7d','Last 7 days'],['30d','Last 30 days'],['all','All available'],['custom','Custom range']].map(x=>({value:x[0],label:x[1]}));}
  function QuotaHistoryPanel({histories,quota,range,changeRange,windowMinutes,changeWindow}){
   const duration=windowMinutes;
   const set=histories&&histories.find(p=>p.durationMinutes===duration);
@@ -93,13 +94,15 @@ import {createRoot} from "react-dom/client";
    const navbar=[['overview','Overview'],['quotas','Quotas & history'],['tokens','Tokens'],['sessions','Sessions'],['projects','Projects']];
    const sidebar=h('aside',{className:'sidebar'},h('div',{className:'brand'},h('div',{className:'mark'},'⌁'),h('div',null,h('div',{className:'brand-name'},'Codex Insights'),h('div',{className:'brand-sub'},'ANALYTICS STUDIO'))),
     h('nav',{className:'nav','aria-label':'Dashboard sections'},h('div',{className:'nav-title'},'Workspace'),navbar.map(([id,title])=>h('button',{key:id,type:'button',className:'nav-item'+(this.state.page===id?' active':''),onClick:()=>this.setPage(id)},h('span',{className:'nav-symbol'},icon(id)),title))),
-    h('div',{className:'side-bottom'},h('div',null,h('span',{className:'status-indicator '+(state==='connected'?'':state==='loading'?'loading':'error')}),statusLabel),h('div',{className:'muted small'},'Codex App Server'),h('div',{className:'tiny muted',style:{marginTop:9}},'v0.3.1 · Local-first')));
+    h('div',{className:'side-bottom'},h('div',null,h('span',{className:'status-indicator '+(state==='connected'?'':state==='loading'?'loading':'error')}),statusLabel),h('div',{className:'muted small'},'Codex App Server'),h('div',{className:'tiny muted',style:{marginTop:9}},'v0.4.0 · Local-first')));
    const header=h('div',{className:'page-top'},h('div',null,h('div',{className:'eyebrow'},'Developer observability'),h('h1',{className:'page-title'},this.state.page==='overview'?'Analytics overview':this.state.page==='quotas'?'Quota intelligence':this.state.page==='tokens'?'Token analytics':this.state.page==='projects'?'Project analytics':'Session explorer'),h('p',{className:'page-description'},'ChatGPT plan limits and local Codex usage, kept separate and accurately sourced.')),
     h('div',{className:'top-actions'},h('span',{className:'tag '+(state==='connected'?'ok':'')},(quota&&quota.plan?quota.plan.toUpperCase()+' · ':'')+statusLabel),h('button',{className:'button primary',type:'button',onClick:()=>this.refresh(),disabled:this.state.refreshing},this.state.refreshing?'Refreshing…':'↻ Refresh')));
    const filters=data?h('div',{className:'filters'},selectField('Period',f.period,rangeOptions(),v=>this.setFilters({period:v})),
     selectField('Session',f.session,[{value:'',label:'All sessions'}].concat((data.options.sessions||[]).map(x=>({value:x.id,label:x.label}))),v=>this.setFilters({session:v})),
     selectField('Model',f.model,[{value:'',label:'All models'}].concat(data.options.models.map(x=>({value:x,label:x}))),v=>this.setFilters({model:v})),
     selectField('Project',f.project,[{value:'',label:'All projects'}].concat(data.options.projects.map(x=>({value:x,label:projectName(x)}))),v=>this.setFilters({project:v})),
+    f.period==='custom'?dateField('From',f.startDate,v=>this.setFilters({startDate:v})):null,
+    f.period==='custom'?dateField('To',f.endDate,v=>this.setFilters({endDate:v})):null,
     h('div',{className:'filters-end'},h('button',{type:'button',className:'button',onClick:()=>this.setFilters(initialFilters)},'Clear filters'))):null;
    const totals=data&&data.total;
    const metrics=totals&&h('div',{className:'metric-grid'},h(Metric,{label:'Sessions',value:data.sessionCount,caption:'Observed in selected period',color:palette.used}),h(Metric,{label:'Input tokens',value:totals.inputTokens,caption:'Includes cached input',color:palette.input}),h(Metric,{label:'Output tokens',value:totals.outputTokens,caption:'Total generated',color:palette.output}),h(Metric,{label:'Cached input',value:totals.cachedInputTokens,caption:totals.inputTokens?`${(totals.cachedInputTokens/totals.inputTokens*100).toFixed(1)}% of input`: 'No input data',color:palette.cached}),h(Metric,{label:'Uncached input',value:Math.max(0,totals.inputTokens-totals.cachedInputTokens),caption:'Derived from observed counters',color:palette.input}),h(Metric,{label:'Reasoning output',value:totals.reasoningOutputTokens,caption:'Included in output when reported',color:palette.used}));

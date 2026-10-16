@@ -9,4 +9,6 @@ describe('combined analytics filters',()=>{
  it('combines period, session, model, and project without changing source totals',()=>{const view=buildAnalyticsView(data,{period:'24h',session:'a',model:'m1',project:'/p/a'},now);expect(view.total.inputTokens).toBe(100);expect(view.eventCount).toBe(1);expect(data.total.inputTokens).toBe(600);});
  it('never shows a different session for a stale selection',()=>{const view=buildAnalyticsView(data,{period:'all',session:'missing'},now);expect(view.eventCount).toBe(0);expect(view.selectedFilterValid).toBe(false);});
  it('keeps cache and reasoning as subsets',()=>{const view=buildAnalyticsView(data,{period:'all'},now);expect(view.total).toMatchObject({inputTokens:600,outputTokens:30,cachedInputTokens:300,reasoningOutputTokens:6});});
+ it('applies an inclusive custom calendar range with the other filters',()=>{const view=buildAnalyticsView(data,{period:'custom',startDate:'2026-10-15',endDate:'2026-10-15',session:'a',model:'m1',project:'/p/a'},now);expect(view.eventCount).toBe(1);expect(view.total.inputTokens).toBe(100);});
+ it('returns an empty view for an inverted custom range',()=>{const view=buildAnalyticsView(data,{period:'custom',startDate:'2026-10-16',endDate:'2026-10-15'},now);expect(view.eventCount).toBe(0);expect(view.selectedFilterValid).toBe(false);});
 });
