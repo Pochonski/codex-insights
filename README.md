@@ -36,11 +36,14 @@ npm ci
 npm run typecheck
 npm test
 npm run build
+npm run test:e2e
 npm run package
 npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.4.0.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md).
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.4.1.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
+
+Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `xvfb-run -a npm run test:e2e`. The suite downloads VS Code 1.90.0 on first run, uses synthetic data, and does not use Codex credentials or App Server. See [the E2E guide](docs/E2E_TESTING_0.4.1.md).
 
 ## Architecture and data sources
 
@@ -77,8 +80,7 @@ If quotas are unavailable, check `codex --version`, `codex app-server --help`, `
 
 - A continuation reads only new bytes. Ambiguous replacement or truncation reconciles the affected file safely.
 - The dashboard limits each view to 250 session rows and 500 time points for responsiveness.
-- Alerts, predictions, exports, and broader Electron E2E automation remain planned.
-- Broader end-to-end VS Code automation remains planned.
+- Alerts, predictions, exports, and DOM-level visual Webview automation remain planned.
 
 New observability providers should emit typed, timestamped observations with explicit provenance. Keep official quotas separate from observed and estimated metrics, add a schema migration for persisted fields, and expose only calculated views to the Webview.
 

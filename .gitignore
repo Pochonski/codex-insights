@@ -3,6 +3,7 @@ node_modules/
 dist/
 out/
 coverage/
+.vscode-test/
 media/dashboard.js
 *.vsix
 *.zip
