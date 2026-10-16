@@ -27,9 +27,10 @@ The test fixture is active only when VS Code supplies ExtensionMode.Test. It nev
 - The host sends dashboard snapshots containing synthetic data and a connected quota state.
 - A simulated quota update produces another host snapshot.
 - Closing and reopening the real dashboard panel updates the lifecycle state.
+- In v0.4.2, a Test-mode probe reads the real StatusBarItem's text, native Markdown value, trusted command allowlist, and click command. Synthetic quota updates change the item. Refresh and Copy Summary commands execute; the clipboard is restored after the assertion.
 
 ## Scope limits
 
-The test does not use browser automation to click controls inside the Webview DOM. Filter selection, charts, custom range input, countdown rendering, and accessibility are covered by unit/integration tests and manual QA, not by pixel or DOM-level Electron automation. A future visual suite may use a maintained VS Code UI driver, but it must remain separate from this deterministic Extension Host gate.
+The test does not use browser automation to click controls inside the Webview DOM or hover the native Status Bar item. Filter selection, charts, custom range input, countdown rendering, and accessibility are covered by unit/integration tests and manual QA, not by pixel or DOM-level Electron automation. A future visual suite may use a maintained VS Code UI driver, but it must remain separate from this deterministic Extension Host gate.
 
 The initial local environment did not provide xvfb-run. The test also runs against the available display server after sanitizing inherited Extension Host variables; CI uses Xvfb for a consistent headless display.

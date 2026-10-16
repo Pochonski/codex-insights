@@ -2,7 +2,7 @@
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.4.0** adds byte-offset JSONL indexing, transactional source checkpoints, partial-line recovery, custom date ranges, and optional local import diagnostics. The interface is built with React 19.
+Version **0.4.2** adds a native Status Bar summary for quick access to official quotas and local token activity. The dashboard is built with React 19.
 
 ## Features
 
@@ -12,10 +12,22 @@ Version **0.4.0** adds byte-offset JSONL indexing, transactional source checkpoi
 - Explore timestamped token charts, sessions, models, and projects with combined period, custom date range, session, model, and project filters.
 - Persist quota samples and normalized session entities in SQLite, with local JSON fallback for runtimes without `node:sqlite`.
 - Deduplicate repeated observations, retain indexed history across restarts, and keep credentials under Codex CLI's control.
+- Read a quota summary directly in the VS Code Status Bar and hover, with quick actions for Dashboard, Refresh, and Copy Summary.
 
 ![Codex Insights dashboard showing synthetic quota and token data](docs/assets/dashboard-demo.png)
 
 *Demo dashboard with synthetic data.*
+
+The Status Bar hover uses VS Code's native Markdown tooltip. Its quota percentages mean **used**, and its token totals cover **all recorded local history**. A sample with synthetic data:
+
+```text
+Codex Insights · Connected · ChatGPT Plus
+5-hour limit: 68% used · 32% remaining · Resets in 1h 24m
+7-day limit: 16% used · 84% remaining · Resets in 6d 19h
+Local tokens · all recorded history: Input 1.2M · Output 24.5K
+```
+
+The hover distinguishes loading, sign-in, offline, stale, warning (80% used), critical (95% used), and exhausted (100% used) states. Old samples are labeled **last known**. Click the indicator to open the dashboard; the hover also has **Refresh** and **Copy Summary** links. The same actions are available in the Command Palette. Copy Summary writes plain text with its generation time and no credentials or conversation content. See [Status Summary design and limitations](docs/STATUS_SUMMARY_0.4.2.md).
 
 ## Requirements and installation
 
@@ -23,7 +35,7 @@ Version **0.4.0** adds byte-offset JSONL indexing, transactional source checkpoi
 - Codex CLI with `codex app-server --stdio` (real-account baseline verified with CLI **0.162.1**; account and quota reads also verified locally with **0.163.0**).
 - A ChatGPT login in Codex CLI to display ChatGPT plan quotas. API-key accounts do not expose those plan quotas.
 
-Install the latest reviewed VSIX using **Extensions → … → Install from VSIX…**, reload VS Code, then run **Codex Insights: Open Dashboard** from the Command Palette. The extension identifier remains `codex-insights-local.codex-insights`, so 0.3.1 upgrades 0.3.0 without changing its storage location.
+Install the latest reviewed VSIX using **Extensions → … → Install from VSIX…**, reload VS Code, then run **Codex Insights: Open Dashboard** from the Command Palette. The extension identifier remains `codex-insights-local.codex-insights`, so updates preserve the extension storage location.
 
 To sign in, run `codex login` and complete the browser flow, or use **Codex Insights: Sign in with ChatGPT**. Check CLI login state with `codex login status`. Codex Insights delegates authentication to Codex App Server; it does not read `auth.json` or store access tokens.
 
@@ -41,7 +53,7 @@ npm run package
 npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.4.1.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.4.2.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
 
 Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `xvfb-run -a npm run test:e2e`. The suite downloads VS Code 1.90.0 on first run, uses synthetic data, and does not use Codex credentials or App Server. See [the E2E guide](docs/E2E_TESTING_0.4.1.md).
 
@@ -69,10 +81,12 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 | `codexInsights.refreshSeconds` | Local session scan interval, minimum 15 seconds. |
 | `codexInsights.codexExecutable` | Codex CLI executable; default `codex`. |
 | `codexInsights.quotaRefreshSeconds` | Quota polling interval, minimum 60 seconds. |
+| `codexInsights.statusBar.compact` | Shorter quota labels in the Status Bar; default `false`. |
+| `codexInsights.statusBar.showWeeklyQuota` | Include the 7-day quota in the Status Bar and hover; default `true`. |
 
 ## Testing and troubleshooting
 
-`npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, and React rendering tests. These tests do not generate model usage. The v0.3.0 dashboard baseline was manually validated in VS Code for real quotas, countdowns, charts, all four filters, and persistence; 0.3.1 still requires a final manual real-account smoke test before release.
+`npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, Status Bar formatting, and React rendering tests. These tests do not generate model usage. The isolated Electron suite verifies Status Bar updates and commands with synthetic data. The new hover still needs visual review in a regular VS Code installation before release.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 

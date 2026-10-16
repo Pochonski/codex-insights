@@ -2,7 +2,7 @@
   "name": "codex-insights",
   "displayName": "Codex Insights",
   "description": "Local-first Codex analytics with ChatGPT plan quotas, history, and React dashboard",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "codex-insights-local",
   "private": true,
   "license": "MIT",
@@ -29,6 +29,10 @@
       {
         "command": "codexInsights.signIn",
         "title": "Codex Insights: Sign in with ChatGPT"
+      },
+      {
+        "command": "codexInsights.copySummary",
+        "title": "Codex Insights: Copy Status Summary"
       }
     ],
     "configuration": {
@@ -60,6 +64,16 @@
           "type": "boolean",
           "default": false,
           "description": "Write anonymized local import performance diagnostics to the Codex Insights Output channel."
+        },
+        "codexInsights.statusBar.compact": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show compact quota percentages in the Codex Insights status bar."
+        },
+        "codexInsights.statusBar.showWeeklyQuota": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the 7-day quota in the status bar and hover when available."
         }
       }
     }
