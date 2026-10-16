@@ -29,7 +29,7 @@ async function scenario(sessionCount,eventsPerSession=100){
   for(let session=0;session<sessionCount;session+=10)await appendFile(path.join(sessions,`session-${session}.jsonl`),line(session,eventsPerSession+1,(eventsPerSession+1)*100)+'\n');
   const changedUpdate=await elapsed(()=>index.scan(sessions));index.close();
   const rssEnd=process.memoryUsage().rss;
-  return {sessions:sessionCount,events:processing.value.length,datasetBytes:(await Promise.all(discovery.value.map(file=>stat(file)))).reduce((sum,item)=>sum+item.size,0),discoveryMs:discovery.ms,readMs:reading.ms,processingMs:processing.ms,deduplicationMs:deduplication.ms,persistenceMs:persistence.ms,firstImportMs:firstImport.ms,unchangedUpdateMs:unchangedUpdate.ms,changedUpdateMs:changedUpdate.ms,dashboardQueryMs:dashboardQuery.ms,rssDeltaMiB:Number(((rssEnd-rssStart)/1048576).toFixed(2)),rssEndMiB:Number((rssEnd/1048576).toFixed(2))};
+  return {sessions:sessionCount,events:processing.value.length,datasetBytes:(await Promise.all(discovery.value.map(file=>stat(file)))).reduce((sum,item)=>sum+item.size,0),discoveryMs:discovery.ms,readMs:reading.ms,processingMs:processing.ms,deduplicationMs:deduplication.ms,persistenceMs:persistence.ms,firstImportMs:firstImport.ms,firstImportBytesRead:firstImport.value.metrics.bytesRead,unchangedUpdateMs:unchangedUpdate.ms,unchangedBytesRead:unchangedUpdate.value.metrics.bytesRead,changedUpdateMs:changedUpdate.ms,changedBytesRead:changedUpdate.value.metrics.bytesRead,dashboardQueryMs:dashboardQuery.ms,rssDeltaMiB:Number(((rssEnd-rssStart)/1048576).toFixed(2)),rssEndMiB:Number((rssEnd/1048576).toFixed(2))};
  }finally{await rm(dir,{recursive:true,force:true});}
 }
 

@@ -2,14 +2,14 @@
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.3.1** hardens the validated v0.3.0 baseline with bounded App Server recovery, stale-data labeling, safer storage recovery, stronger deduplication, and expanded automated coverage. The interface is built with React 19.
+Version **0.4.0** adds byte-offset JSONL indexing, transactional source checkpoints, partial-line recovery, custom date ranges, and optional local import diagnostics. The interface is built with React 19.
 
 ## Features
 
 - Read real ChatGPT plan quota percentages and reset timestamps through the local Codex App Server, including the 5-hour and 7-day windows when available.
 - Show live countdowns without polling every second, and record real quota samples for historical charts.
 - Index local Codex JSONL sessions and analyze input, output, cached input, and reasoning output tokens.
-- Explore timestamped token charts, sessions, models, and projects with combined period, session, model, and project filters.
+- Explore timestamped token charts, sessions, models, and projects with combined period, custom date range, session, model, and project filters.
 - Persist quota samples and normalized session entities in SQLite, with local JSON fallback for runtimes without `node:sqlite`.
 - Deduplicate repeated observations, retain indexed history across restarts, and keep credentials under Codex CLI's control.
 
@@ -40,7 +40,7 @@ npm run package
 npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.3.1.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the 0.3.1 performance baseline](docs/PERFORMANCE_BASELINE_0.3.1.md).
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundle to `media/dashboard.js`. `package` creates `codex-insights-0.4.0.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds both bundles during development. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md).
 
 ## Architecture and data sources
 
@@ -75,9 +75,9 @@ If quotas are unavailable, check `codex --version`, `codex app-server --help`, `
 
 ## Known limitations and roadmap
 
-- A changed JSONL file is reanalyzed in full to preserve cumulative-counter semantics. Future versions can use byte-offset indexing.
+- A continuation reads only new bytes. Ambiguous replacement or truncation reconciles the affected file safely.
 - The dashboard limits each view to 250 session rows and 500 time points for responsiveness.
-- Custom date ranges, alerts, predictions, and exports are planned, not present in v0.3.1.
+- Alerts, predictions, exports, and broader Electron E2E automation remain planned.
 - Broader end-to-end VS Code automation remains planned.
 
 New observability providers should emit typed, timestamped observations with explicit provenance. Keep official quotas separate from observed and estimated metrics, add a schema migration for persisted fields, and expose only calculated views to the Webview.

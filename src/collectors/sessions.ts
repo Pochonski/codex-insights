@@ -1,84 +1,589 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { createHash } from 'node:crypto';
-import type { UsageEvent } from '../core/types';
-import {SessionDatabase,type IndexedFile} from '../storage/session-db';
+import { promises as fs } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { type UsageEvent } from '../core/types';
+import {
+  SESSION_PARSER_VERSION,
+  SessionDatabase,
+  type FileCheckpoint,
+  type IncrementalFileUpdate,
+  type IndexedFile,
+} from '../storage/session-db';
 
-export function defaultSessionsPath():string { return path.join(process.env.CODEX_HOME || path.join(os.homedir(),'.codex'),'sessions'); }
-export async function findSessionFiles(root:string, maxFiles=2000):Promise<string[]> {
-  const files:string[]=[]; const stack=[root];
-  while(stack.length && files.length<maxFiles){ const dir=stack.pop()!; let entries;
-    try { entries=await fs.readdir(dir,{withFileTypes:true}); } catch { continue; }
-    for(const e of entries){ if(e.isSymbolicLink()) continue; const full=path.join(dir,e.name);
-      if(e.isDirectory()) stack.push(full); else if(e.isFile() && e.name.endsWith('.jsonl')) files.push(full);
-      if(files.length>=maxFiles) break;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_LINE_BYTES = 1024 * 1024;
+const SAMPLE_BYTES = 4096;
+
+interface TokenTotals {
+  input: number;
+  output: number;
+  cached: number;
+  reasoning: number;
+}
+
+interface ParserState {
+  sessionId?: string;
+  project?: string;
+  model?: string;
+  lastTotals?: TokenTotals;
+  lastTimestamp?: number;
+}
+
+export interface ScanMetrics {
+  filesInspected: number;
+  filesModified: number;
+  bytesRead: number;
+  eventsNew: number;
+  eventsDeduplicated: number;
+  parseErrors: number;
+  durationMs: number;
+}
+
+export interface SessionScanResult {
+  filesScanned: number;
+  events: UsageEvent[];
+  warnings: string[];
+  metrics: ScanMetrics;
+}
+
+interface ParseResult {
+  events: UsageEvent[];
+  state: ParserState;
+  confirmedBytes: number;
+  partial: Buffer;
+  warnings: string[];
+}
+
+interface FileImportResult {
+  file: IndexedFile;
+  update: IncrementalFileUpdate;
+  archiveFile?: string;
+  metrics: Pick<ScanMetrics, 'bytesRead' | 'eventsNew' | 'eventsDeduplicated' | 'parseErrors'>;
+  warnings: string[];
+}
+
+export interface SessionSource {
+  readonly root: string;
+  readonly stateFile: string;
+  findSessionFiles(): Promise<string[]>;
+}
+
+export class DefaultSessionSource implements SessionSource {
+  public readonly root: string;
+  public readonly stateFile: string;
+
+  public constructor(root = path.join(os.homedir(), '.codex', 'sessions'), stateFile = path.join(os.homedir(), '.codex-insights', 'session-index.json')) {
+    this.root = root;
+    this.stateFile = stateFile;
+  }
+
+  public async findSessionFiles(): Promise<string[]> {
+    const results: string[] = [];
+    const visit = async (directory: string): Promise<void> => {
+      let entries: import('node:fs').Dirent[];
+      try {
+        entries = await fs.readdir(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+        if (entry.isDirectory()) {
+          await visit(fullPath);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          results.push(fullPath);
+        }
+      }
+    };
+    await visit(this.root);
+    return results.slice(0, 2000);
+  }
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function timestampValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 10_000_000_000 ? value : value * 1000;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+  const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
+  const usage = record.total_token_usage ?? record.token_usage ?? record.usage ?? info.total_token_usage ?? payload.total_token_usage;
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+  const data = usage as Record<string, unknown>;
+  const input = numberValue(data.input_tokens ?? data.input);
+  const output = numberValue(data.output_tokens ?? data.output);
+  const cached = numberValue(data.cached_input_tokens ?? data.cached_input ?? data.cache_read_input_tokens);
+  const reasoning = numberValue(data.reasoning_output_tokens ?? data.reasoning);
+  if (input === 0 && output === 0 && cached === 0 && reasoning === 0) {
+    return undefined;
+  }
+  return { input, output, cached, reasoning };
+}
+
+function projectOf(record: Record<string, unknown>): string | undefined {
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+  const candidates = [record.project, record.cwd, record.workspace, record.project_path, payload.project, payload.cwd];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
     }
   }
-  return files.sort();
-}
-function num(v:unknown):number { return typeof v==='number' && Number.isFinite(v) && v>=0 ? Math.floor(v):0; }
-function obj(v:unknown):Record<string,unknown> { return v && typeof v==='object' && !Array.isArray(v) ? v as Record<string,unknown>:{}; }
-export interface SessionParseResult {events:UsageEvent[];warnings:string[];}
-export function parseSessionDetailed(content:string,sourceFile:string):SessionParseResult {
-  let sessionId=path.basename(sourceFile,'.jsonl'); let model:string|undefined; let project:string|undefined; let lastTotals:Record<string,number>|undefined;
-  let lastTimestamp:number|undefined;const events:UsageEvent[]=[];const warnings:string[]=[];let malformed=0,outOfOrder=0;let lineNo=0;
-  for(const line of content.split(/\r?\n/)){lineNo++; if(!line.trim())continue; let record:Record<string,unknown>;
-    try{record=obj(JSON.parse(line));}catch{malformed++;continue;}
-    const payload=obj(record.payload); const info=obj(payload.info);
-    if(record.type==='session_meta'){if(typeof payload.id==='string')sessionId=payload.id;if(typeof payload.cwd==='string'&&payload.cwd.trim())project=payload.cwd;}
-    if(record.type==='turn_context'){if(typeof payload.model==='string')model=payload.model;if(typeof payload.cwd==='string'&&payload.cwd.trim())project=payload.cwd;}
-    if(record.type!=='event_msg' || payload.type!=='token_count')continue;
-    const total=obj(info.total_token_usage);
-    // total_token_usage is cumulative; calculate deltas to avoid double counting.
-    if(!Object.keys(total).length)continue;
-    const keys=['input_tokens','output_tokens','cached_input_tokens','reasoning_output_tokens'];
-    const now=Object.fromEntries(keys.map(k=>[k,num(total[k])]));
-    const timestamp=typeof record.timestamp==='string'?record.timestamp:'';const observedAt=Date.parse(timestamp);const decreasing=!!lastTotals&&keys.some(k=>now[k]<lastTotals![k]);
-    if(Number.isFinite(observedAt)&&lastTimestamp!==undefined&&observedAt<lastTimestamp){outOfOrder++;continue;}
-    if(decreasing&&(!Number.isFinite(observedAt)||(lastTimestamp!==undefined&&observedAt<=lastTimestamp))){outOfOrder++;continue;}
-    const delta=Object.fromEntries(keys.map(k=>[k,Math.max(0,now[k]-(lastTotals?.[k]??0))]));
-    // Count a reset only when the observation is chronologically valid. Ambiguous records are skipped.
-    if(decreasing)for(const k of keys)delta[k]=now[k];
-    lastTotals=now;if(Number.isFinite(observedAt))lastTimestamp=observedAt;
-    if(!keys.some(k=>delta[k]>0))continue;
-    events.push({id:createHash('sha256').update(sourceFile+':'+lineNo).digest('hex'),fingerprint:createHash('sha256').update(sessionId+':'+JSON.stringify(record)).digest('hex'),sessionId,timestamp,model,project,inputTokens:delta.input_tokens,outputTokens:delta.output_tokens,cachedInputTokens:delta.cached_input_tokens,reasoningOutputTokens:delta.reasoning_output_tokens,sourceFile});
-  }
-  if(malformed)warnings.push(`${path.basename(sourceFile)} contains ${malformed} invalid or incomplete JSON line${malformed===1?'':'s'}; valid records were retained.`);
-  if(outOfOrder)warnings.push(`${path.basename(sourceFile)} contains ${outOfOrder} ambiguous out-of-order token observation${outOfOrder===1?'':'s'}; skipped to prevent double counting.`);
-  return {events,warnings};
-}
-export function parseSession(content:string,sourceFile:string):UsageEvent[]{return parseSessionDetailed(content,sourceFile).events;}
-export async function collectSessions(root:string):Promise<{filesScanned:number;events:UsageEvent[];warnings:string[]}>{
-  const files=await findSessionFiles(root);const events:UsageEvent[]=[];const warnings:string[]=[];
-  for(const file of files){try{const stat=await fs.stat(file);if(stat.size>25*1024*1024){warnings.push(`Skipped oversized file: ${path.basename(file)}`);continue;}const parsed=parseSessionDetailed(await fs.readFile(file,'utf8'),file);events.push(...parsed.events);warnings.push(...parsed.warnings);}catch{warnings.push(`Could not read ${path.basename(file)}`);}}
-  return {filesScanned:files.length,events,warnings};
+  return undefined;
 }
 
-/** Persistent file index: unchanged JSONL files are not reparsed after refresh or restart. */
+function modelOf(record: Record<string, unknown>): string | undefined {
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+  const candidates = [record.model, record.model_name, record.model_id, payload.model];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function initialState(): ParserState {
+  return {};
+}
+
+function decodeState(value: string | null | undefined): ParserState {
+  if (!value) {
+    return initialState();
+  }
+  try {
+    const parsed = JSON.parse(value) as ParserState;
+    return parsed && typeof parsed === 'object' ? parsed : initialState();
+  } catch {
+    return initialState();
+  }
+}
+
+function encodeState(value: ParserState): string {
+  return JSON.stringify(value);
+}
+
+function fingerprint(record: Record<string, unknown>, sessionId: string): string {
+  return createHash('sha256').update(sessionId).update(':').update(JSON.stringify(record)).digest('hex');
+}
+
+function stableEventId(sourceFile: string, lineOffset: number): string {
+  return createHash('sha256').update(sourceFile).update(':').update(String(lineOffset)).digest('hex').slice(0, 24);
+}
+
+function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number): ParseResult {
+  const state: ParserState = { ...previous, lastTotals: previous.lastTotals ? { ...previous.lastTotals } : undefined };
+  const events: UsageEvent[] = [];
+  const warnings: string[] = [];
+  let cursor = 0;
+  let confirmedBytes = 0;
+
+  while (cursor < content.length) {
+    const newline = content.indexOf(0x0a, cursor);
+    if (newline === -1) {
+      break;
+    }
+    const end = newline > cursor && content[newline - 1] === 0x0d ? newline - 1 : newline;
+    const line = content.subarray(cursor, end);
+    const lineOffset = baseOffset + cursor;
+    confirmedBytes = newline + 1;
+    cursor = newline + 1;
+    if (line.length === 0) {
+      continue;
+    }
+    if (line.length > MAX_LINE_BYTES) {
+      warnings.push('Skipped an oversized JSONL line in ' + path.basename(sourceFile) + '.');
+      continue;
+    }
+    let record: Record<string, unknown>;
+    try {
+      record = JSON.parse(line.toString('utf8')) as Record<string, unknown>;
+    } catch {
+      warnings.push('Skipped invalid JSONL in ' + path.basename(sourceFile) + '.');
+      continue;
+    }
+
+    const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+    const candidateSession = typeof record.session_id === 'string' ? record.session_id : typeof record.sessionId === 'string' ? record.sessionId : typeof payload.id === 'string' ? payload.id : undefined;
+    state.sessionId = candidateSession ?? state.sessionId;
+    state.project = projectOf(record) ?? state.project;
+    state.model = modelOf(record) ?? state.model;
+    const totals = totalsOf(record);
+    if (!totals) {
+      continue;
+    }
+    const timestamp = timestampValue(record.timestamp ?? record.created_at ?? record.time) ?? Date.now();
+    const currentSession = state.sessionId ?? createHash('sha256').update(sourceFile).digest('hex').slice(0, 16);
+    let delta = totals;
+    if (state.lastTotals) {
+      if (state.lastTimestamp !== undefined && timestamp < state.lastTimestamp) {
+        warnings.push('Skipped out-of-order cumulative usage in ' + path.basename(sourceFile) + '.');
+        continue;
+      }
+      const decreased = totals.input < state.lastTotals.input || totals.output < state.lastTotals.output || totals.cached < state.lastTotals.cached || totals.reasoning < state.lastTotals.reasoning;
+      if (decreased && state.lastTimestamp !== undefined && timestamp <= state.lastTimestamp) {
+        warnings.push('Skipped ambiguous cumulative counter decrease in ' + path.basename(sourceFile) + '.');
+        continue;
+      }
+      delta = decreased
+        ? totals
+        : {
+            input: totals.input - state.lastTotals.input,
+            output: totals.output - state.lastTotals.output,
+            cached: totals.cached - state.lastTotals.cached,
+            reasoning: totals.reasoning - state.lastTotals.reasoning,
+          };
+    }
+    state.lastTotals = totals;
+    state.lastTimestamp = timestamp;
+    if (delta.input === 0 && delta.output === 0 && delta.cached === 0 && delta.reasoning === 0) {
+      continue;
+    }
+    events.push({
+      id: stableEventId(sourceFile, lineOffset),
+      sessionId: currentSession,
+      sourceFile,
+      timestamp: new Date(timestamp).toISOString(),
+      model: state.model,
+      project: state.project,
+      inputTokens: delta.input,
+      outputTokens: delta.output,
+      cachedInputTokens: delta.cached,
+      reasoningOutputTokens: delta.reasoning,
+      fingerprint: fingerprint(record, currentSession),
+    });
+  }
+  return { events, state, confirmedBytes, partial: content.subarray(confirmedBytes), warnings };
+}
+
+export function parseSessionDetailed(content: string, sourceFile: string): { events: UsageEvent[]; warnings: string[] } {
+  const complete = content.endsWith('\n') ? content : content + '\n';
+  const parsed = parseSessionBuffer(Buffer.from(complete, 'utf8'), sourceFile, initialState(), 0);
+  return { events: parsed.events, warnings: parsed.warnings };
+}
+
+export function parseSession(content: string, sourceFile: string): UsageEvent[] {
+  return parseSessionDetailed(content, sourceFile).events;
+}
+
+async function readRange(filePath: string, offset: number, length: number): Promise<Buffer> {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const output = Buffer.allocUnsafe(length);
+    let position = 0;
+    while (position < length) {
+      const result = await handle.read(output, position, length - position, offset + position);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      position += result.bytesRead;
+    }
+    return position === length ? output : output.subarray(0, position);
+  } finally {
+    await handle.close();
+  }
+}
+
+function identityOf(stat: import('node:fs').Stats): string | undefined {
+  if (typeof stat.dev === 'number' && typeof stat.ino === 'number' && stat.dev !== 0 && stat.ino !== 0) {
+    return String(stat.dev) + ':' + String(stat.ino);
+  }
+  return undefined;
+}
+
+function generationOf(data: Buffer): string {
+  return createHash('sha256').update(data.subarray(0, SAMPLE_BYTES)).digest('hex').slice(0, 20);
+}
+
+function indexedFile(value: Partial<IndexedFile> & Pick<IndexedFile, 'size' | 'mtimeMs' | 'events'>): IndexedFile {
+  return {
+    size: value.size,
+    mtimeMs: value.mtimeMs,
+    offset: value.offset ?? 0,
+    identity: value.identity ?? null,
+    generation: value.generation ?? null,
+    parserState: value.parserState ?? encodeState(initialState()),
+    partial: value.partial ?? '',
+    parserVersion: value.parserVersion ?? 1,
+    lastReadAt: value.lastReadAt ?? null,
+    events: value.events,
+  };
+}
+
+function checkpoint(file: IndexedFile): FileCheckpoint {
+  return {
+    size: file.size,
+    mtimeMs: file.mtimeMs,
+    offset: file.offset,
+    identity: file.identity,
+    generation: file.generation,
+    parserState: file.parserState,
+    partial: file.partial,
+    parserVersion: file.parserVersion,
+    lastReadAt: file.lastReadAt,
+  };
+}
+
+export function defaultSessionsPath(): string {
+  return path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
+}
+
 export class SessionIndex {
- private cache=new Map<string,IndexedFile>();
- private loaded=false;private fallbackWritable=true;private loadWarnings:string[]=[];private readonly database:SessionDatabase;
- constructor(private readonly stateFile:string){this.database=new SessionDatabase(path.dirname(stateFile));}
- get storageMode(){return this.database.available?'sqlite + json fallback':'json';}
- close(){this.database.close();}
- private async load(){if(this.loaded)return;this.loaded=true;try{await this.database.open();}catch{this.loadWarnings.push(this.database.error||'SQLite session storage is unavailable; the original database was preserved.');}
-  try{const parsed:unknown=JSON.parse(await fs.readFile(this.stateFile,'utf8'));if(!Array.isArray(parsed))throw new Error();for(const item of parsed){if(item&&typeof item==='object'){const v=item as Record<string,unknown>;if(typeof v.file==='string'&&typeof v.size==='number'&&typeof v.mtimeMs==='number'&&Array.isArray(v.events))this.cache.set(v.file,{size:v.size,mtimeMs:v.mtimeMs,events:v.events as UsageEvent[]});}}}catch(error){if((error as {code?:string}).code!=='ENOENT'){this.fallbackWritable=false;this.loadWarnings.push('The JSON session index is invalid. The original file was preserved and will not be overwritten.');}}
-  if(!this.cache.size&&this.database.available)this.cache=this.database.read();}
- async scan(root:string):Promise<{filesScanned:number;events:UsageEvent[];warnings:string[]}>{
-  await this.load();
-  try{await fs.readdir(root);}catch{return {filesScanned:0,events:[...this.cache.values()].flatMap(v=>v.events),warnings:['Sessions directory is unavailable; showing the last indexed data.']};}
-  const files=await findSessionFiles(root);const warnings:string[]=[...this.loadWarnings];let changed=false;
-  for(const file of files){try{const stat=await fs.stat(file);if(stat.size>25*1024*1024){warnings.push(`Skipped oversized file: ${path.basename(file)}`);continue;}const prior=this.cache.get(file);if(prior&&prior.size===stat.size&&prior.mtimeMs===stat.mtimeMs)continue;
-   const parsed=parseSessionDetailed(await fs.readFile(file,'utf8'),file),events=parsed.events;warnings.push(...parsed.warnings);
-   if(prior){const match=new Map(events.map(e=>[e.id,JSON.stringify([e.timestamp,e.sessionId,e.inputTokens,e.outputTokens,e.cachedInputTokens,e.reasoningOutputTokens]) ]));
-    const lost=prior.events.filter(e=>match.get(e.id)!==JSON.stringify([e.timestamp,e.sessionId,e.inputTokens,e.outputTokens,e.cachedInputTokens,e.reasoningOutputTokens]));
-    if(lost.length){const archivedFile=`${file}#archived:${prior.mtimeMs}`;this.cache.set(archivedFile,{size:prior.size,mtimeMs:prior.mtimeMs,events:lost.map(e=>({...e,id:createHash('sha256').update(e.id+archivedFile).digest('hex'),sourceFile:archivedFile}))});}
-   }
-   this.cache.set(file,{size:stat.size,mtimeMs:stat.mtimeMs,events});changed=true;
-  }catch{warnings.push(`Could not read ${path.basename(file)}`);}}
-  if(changed&&this.fallbackWritable){await fs.mkdir(path.dirname(this.stateFile),{recursive:true});const temp=this.stateFile+'.tmp';await fs.writeFile(temp,JSON.stringify([...this.cache].map(([file,v])=>({file,...v}))),{mode:0o600});await fs.rename(temp,this.stateFile);}
-  try{this.database.sync(this.cache);}catch{warnings.push('SQLite session index could not be updated; JSON fallback remains available.');}
-  return {filesScanned:files.length,events:[...this.cache.values()].flatMap(v=>v.events),warnings};
- }
+  private cache = new Map<string, IndexedFile>();
+  private loaded = false;
+  private loading?: Promise<void>;
+  private scanning?: Promise<SessionScanResult>;
+  private fallbackWritable = true;
+  private readonly loadWarnings: string[] = [];
+  private readonly database: SessionDatabase;
+
+  private readonly source: SessionSource;
+
+  public constructor(stateFileOrSource: string | SessionSource = new DefaultSessionSource(), database?: SessionDatabase) {
+    this.source = typeof stateFileOrSource === 'string'
+      ? { root: defaultSessionsPath(), stateFile: stateFileOrSource, findSessionFiles: () => findSessionFiles(defaultSessionsPath()) }
+      : stateFileOrSource;
+    this.database = database ?? new SessionDatabase(path.dirname(this.source.stateFile));
+  }
+
+  public get storageMode(): string {
+    return this.database.available ? 'sqlite + json fallback' : 'json';
+  }
+
+  public async scan(root?: string): Promise<SessionScanResult> {
+    if (!this.scanning) {
+      this.scanning = this.scanInternal(root).finally(() => {
+        this.scanning = undefined;
+      });
+    }
+    return this.scanning;
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.loaded) {
+      return;
+    }
+    if (!this.loading) {
+      this.loading = this.load().finally(() => {
+        this.loaded = true;
+      });
+    }
+    return this.loading;
+  }
+
+  private async load(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.source.stateFile, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      const entries = Array.isArray(parsed)
+        ? parsed.flatMap((entry) => entry && typeof entry === 'object' && typeof (entry as { file?: unknown }).file === 'string'
+          ? [[(entry as { file: string }).file, entry as Partial<IndexedFile>]] as [string, Partial<IndexedFile>][]
+          : [])
+        : parsed && typeof parsed === 'object' ? Object.entries(parsed as Record<string, Partial<IndexedFile>>) : [];
+      for (const [file, entry] of entries) {
+        if (entry && Array.isArray(entry.events) && typeof entry.size === 'number' && typeof entry.mtimeMs === 'number') {
+          this.cache.set(file, indexedFile(entry as Partial<IndexedFile> & Pick<IndexedFile, 'size' | 'mtimeMs' | 'events'>));
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.fallbackWritable = false;
+        this.loadWarnings.push('The JSON session index is invalid. The original file was preserved and will not be overwritten.');
+      }
+    }
+    try {
+      await this.database.open();
+      const databaseEntries = this.database.read();
+      if (databaseEntries.size > 0) {
+        this.cache = databaseEntries;
+      }
+    } catch {
+      // SQLite is optional. The JSON fallback remains available when it is valid.
+    }
+  }
+
+  private async scanInternal(root?: string): Promise<SessionScanResult> {
+    const started = performance.now();
+    await this.ensureLoaded();
+    const warnings: string[] = [...this.loadWarnings];
+    const metrics: ScanMetrics = { filesInspected: 0, filesModified: 0, bytesRead: 0, eventsNew: 0, eventsDeduplicated: 0, parseErrors: 0, durationMs: 0 };
+    let changed = false;
+    let files: string[];
+    try {
+      if (root) {
+        await fs.readdir(root);
+        files = await findSessionFiles(root);
+      } else {
+        files = await this.source.findSessionFiles();
+      }
+    } catch {
+      warnings.push('Codex session folder is unavailable; showing previously indexed data.');
+      return this.result(warnings, metrics, started);
+    }
+    const next = new Map(this.cache);
+    for (const file of files) {
+      metrics.filesInspected += 1;
+      try {
+        const stat = await fs.stat(file);
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) {
+          if (stat.size > MAX_FILE_BYTES) {
+            warnings.push('Skipped oversized session file ' + path.basename(file) + '.');
+          }
+          continue;
+        }
+        const prior = this.cache.get(file);
+        const imported = await this.importFile(file, stat, prior);
+        if (!imported) {
+          continue;
+        }
+        metrics.filesModified += 1;
+        metrics.bytesRead += imported.metrics.bytesRead;
+        metrics.eventsNew += imported.metrics.eventsNew;
+        metrics.eventsDeduplicated += imported.metrics.eventsDeduplicated;
+        metrics.parseErrors += imported.metrics.parseErrors;
+        warnings.push(...imported.warnings);
+        const candidate = new Map(next);
+        if (imported.archiveFile && prior) {
+          candidate.set(imported.archiveFile, { ...prior, events: prior.events.map((event) => ({ ...event, sourceFile: imported.archiveFile as string })) });
+        }
+        candidate.set(file, imported.file);
+        this.commit(imported.update);
+        changed = true;
+        next.clear();
+        for (const [key, value] of candidate) {
+          next.set(key, value);
+        }
+      } catch (error) {
+        warnings.push('Could not index session file ' + path.basename(file) + ': ' + this.safeError(error));
+      }
+    }
+    if (changed) {
+      this.persistFallback(next);
+    }
+    this.cache = next;
+    return this.result(warnings, metrics, started);
+  }
+
+  private async importFile(file: string, stat: import('node:fs').Stats, prior: IndexedFile | undefined): Promise<FileImportResult | undefined> {
+    const identity = identityOf(stat);
+    let reconcile = !prior || prior.parserVersion !== SESSION_PARSER_VERSION || stat.size < prior.offset;
+    if (prior && identity && prior.identity && identity !== prior.identity) {
+      reconcile = true;
+    }
+    if (prior && stat.size === prior.size && stat.mtimeMs !== prior.mtimeMs) {
+      reconcile = true;
+    }
+    if (!reconcile && prior && !identity && prior.generation) {
+      const sample = await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES));
+      if (generationOf(sample) !== prior.generation) {
+        reconcile = true;
+      }
+    }
+    if (!reconcile && prior && stat.size === prior.size && stat.mtimeMs === prior.mtimeMs) {
+      return undefined;
+    }
+
+    const start = reconcile ? 0 : prior?.offset ?? 0;
+    const data = await readRange(file, start, stat.size - start);
+    const generationData = !identity && !reconcile ? await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES)) : data;
+    const parser = parseSessionBuffer(data, file, reconcile ? initialState() : decodeState(prior?.parserState), start);
+    const offset = start + parser.confirmedBytes;
+    const sourceEvents = reconcile ? prior?.events ?? [] : prior?.events ?? [];
+    const existingFingerprints = new Set(sourceEvents.map((event) => event.fingerprint));
+    const accepted = parser.events.filter((event) => !existingFingerprints.has(event.fingerprint));
+    const deduplicated = parser.events.length - accepted.length;
+    const events = reconcile ? accepted : [...sourceEvents, ...accepted];
+    const nextFile = indexedFile({
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      offset,
+      identity,
+      generation: generationOf(generationData),
+      parserState: encodeState(parser.state),
+      partial: parser.partial.toString('base64'),
+      parserVersion: SESSION_PARSER_VERSION,
+      lastReadAt: Date.now(),
+      events,
+    });
+    const archiveFile = reconcile && prior && prior.events.some((oldEvent) => !events.some((event) => event.fingerprint === oldEvent.fingerprint))
+      ? file + '#archived:' + (prior.generation ?? String(prior.mtimeMs))
+      : undefined;
+    const update: IncrementalFileUpdate = { file, checkpoint: checkpoint(nextFile), events: accepted, archiveFile };
+    return {
+      file: nextFile,
+      update,
+      archiveFile,
+      warnings: parser.warnings,
+      metrics: {
+        bytesRead: data.length + (generationData === data ? 0 : generationData.length),
+        eventsNew: accepted.length,
+        eventsDeduplicated: deduplicated,
+        parseErrors: parser.warnings.filter((warning) => warning.includes('invalid JSONL')).length,
+      },
+    };
+  }
+
+  private commit(update: IncrementalFileUpdate): void {
+    if (this.database.available) {
+      this.database.applyIncremental(update);
+    }
+  }
+
+  private persistFallback(cache: Map<string, IndexedFile>): void {
+    if (!this.fallbackWritable) {
+      return;
+    }
+    const serializable = [...cache].map(([file, entry]) => ({ file, ...entry }));
+    const directory = path.dirname(this.source.stateFile);
+    const temporary = this.source.stateFile + '.tmp-' + process.pid + '-' + Date.now();
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(temporary, JSON.stringify(serializable), { encoding: 'utf8', mode: 0o600 });
+    renameSync(temporary, this.source.stateFile);
+  }
+
+  private result(warnings: string[], metrics: ScanMetrics, started: number): SessionScanResult {
+    metrics.durationMs = performance.now() - started;
+    const events: UsageEvent[] = [];
+    for (const entry of this.cache.values()) {
+      for (const event of entry.events) {
+        events.push(event);
+      }
+    }
+    return { filesScanned: metrics.filesInspected, events: events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)), warnings: [...new Set(warnings)], metrics };
+  }
+
+  private safeError(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.replace(/[\\r\\n]/g, ' ').slice(0, 180);
+  }
+
+  public dispose(): void {
+    this.database.close();
+  }
+
+  public close(): void {
+    this.dispose();
+  }
+}
+
+export async function findSessionFiles(root: string, maxFiles = 2000): Promise<string[]> {
+  const source = new DefaultSessionSource(root, '');
+  return (await source.findSessionFiles()).slice(0, maxFiles).sort();
 }

@@ -2,7 +2,7 @@
   "name": "codex-insights",
   "displayName": "Codex Insights",
   "description": "Local-first Codex analytics with ChatGPT plan quotas, history, and React dashboard",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "codex-insights-local",
   "private": true,
   "license": "MIT",
@@ -55,6 +55,11 @@
           "default": 180,
           "minimum": 60,
           "description": "Refresh rate limit information via Codex App Server, in seconds."
+        },
+        "codexInsights.diagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write anonymized local import performance diagnostics to the Codex Insights Output channel."
         }
       }
     }
