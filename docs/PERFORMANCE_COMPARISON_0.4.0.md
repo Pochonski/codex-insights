@@ -13,6 +13,8 @@ The benchmark uses synthetic JSONL records only. It ran once on Linux x64, Node 
 
 The v0.3.1 comparable reference read the full 23.66 MB dataset during a changed refresh and took 341.85 ms. v0.4.0 read 23,689 B for the append workload, about 99.9% fewer bytes. Its changed refresh was 256.78 ms on this run; it did not reach the aspirational 100 ms target because discovery and in-memory historical aggregation still visit the known source set. Indexing remains correctness-first.
 
+A final QA rerun on the same environment measured 275.78 ms for that changed update, 149.80 ms unchanged, 2,535.09 ms first import, and 84.77 ms for the dashboard query. Timing varies with filesystem cache and process memory; the deterministic byte count remained 23,689 B.
+
 ## Semantics and recovery
 
 - Offsets are UTF-8 byte offsets. A partial final JSON line remains unconfirmed and is read again with its completed suffix.
