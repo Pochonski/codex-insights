@@ -1,6 +1,6 @@
-# Native Status Summary (v0.4.2)
+# Quick monitoring surfaces (v0.4.2)
 
-The right-aligned Status Bar item keeps its existing priority and opens the dashboard on click. Its tooltip is a `vscode.MarkdownString`; no Webview or browser layer is created on hover. The pure formatter in `src/extension/status-summary.ts` consumes the latest in-memory quota and local session aggregate. Hovering does not perform I/O.
+The right-aligned Status Bar item keeps its existing priority and opens the mini panel on click by default. Its tooltip is a `vscode.MarkdownString`; no Webview or browser layer is created on hover. The pure formatter in `src/extension/status-summary.ts` consumes the latest in-memory quota and local session aggregate. Hovering does not perform I/O.
 
 ## Data and presentation
 
@@ -17,48 +17,38 @@ Example Markdown produced from synthetic data:
 ### $(pulse) Codex Insights
 
 **Connected** · ChatGPT Plus
-
 Updated 12s ago
 
----
+**5-HOUR LIMIT · 44% used**
+56% available · Resets in 4h 19m
 
-**5-hour limit**
+**7-DAY LIMIT · 41% used**
+59% available · Resets in 5d 19h
 
-68% used · 32% remaining
+**Local activity** · 149 sessions
+Input 146.6M · Output 716K
 
-Resets in 1h 24m
-
-**7-day limit**
-
-16% used · 84% remaining
-
-Resets in 6d 19h
-
----
-
-**Local tokens · all recorded history**
-
-Input 1.2M · Output 24.5K
-
-Cached input 1.1M · Sessions 1
-
-Last observed model: gpt\-6\-sol
-
----
-
-[Open Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy Summary](command:codexInsights.copySummary)
+[Mini Panel](command:codexInsights.openMiniPanel) · [Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh)
 ```
 
 The sample is illustrative and contains no user data. The precise relative reset text changes with the clock.
 
 ## Commands and settings
 
-The Status Bar click runs `codexInsights.openDashboard`. The Markdown links run only `codexInsights.openDashboard`, `codexInsights.refresh`, and `codexInsights.copySummary`; `MarkdownString.isTrusted` allowlists exactly those command IDs. The command URIs contain no arguments or session-derived content. The commands are also available in the Command Palette. Copy Summary generates plain text with a timestamp and an explicit stale label where needed. It omits account identifiers, email, prompts, and responses.
+The Status Bar click runs `codexInsights.openMiniPanel` by default. Set `codexInsights.statusBar.clickAction` to `dashboard` to keep the previous behavior. The Markdown links run only `codexInsights.openMiniPanel`, `codexInsights.openDashboard`, and `codexInsights.refresh`; `MarkdownString.isTrusted` allowlists these and `codexInsights.copySummary` explicitly. The command URIs contain no arguments or session-derived content. The commands are also available in the Command Palette. Copy Summary generates plain text with a timestamp and an explicit stale label where needed. It omits account identifiers, email, prompts, and responses.
 
-`codexInsights.statusBar.compact` defaults to `false` and shortens the item text when enabled. `codexInsights.statusBar.showWeeklyQuota` defaults to `true` and controls whether the 7-day window appears in the item and tooltip. The dashboard's global quotas are unaffected by these presentation settings.
+`codexInsights.statusBar.compact` defaults to `false` and shortens the item text when enabled. `codexInsights.statusBar.showWeeklyQuota` defaults to `true` and controls whether the 7-day window appears in the item and tooltip. The dashboard's global quotas and the mini panel's available windows are unaffected by these presentation settings.
+
+## Mini panel
+
+The mini panel uses an official `vscode.WebviewPanel` in the editor area. VS Code has no public API for an arbitrary floating HTML panel anchored to a Status Bar item. One controller reuses and reveals the existing panel on repeated opens. The panel receives a normalized summary derived from the same in-memory quota and analytics data as the hover and full dashboard. Opening it starts no extra App Server process or polling loop.
+
+React shows each available quota window with an accessible progress bar, reset time and absolute date tooltip, plus all-history input, output, sessions, cached input share, and last observed model. Dashboard, Refresh, and Copy buttons send fixed typed messages to the host. Only `mini/ready`, `mini/refresh`, `mini/openDashboard`, and `mini/copySummary` are accepted; extra payloads are rejected. The Webview receives no account ID, credentials, prompts, or conversation content. It has local `media/` resource roots, nonce-based scripts, and a restrictive CSP. A local 15-second timer updates relative labels and is removed on unmount.
+
+The demo screenshots are rendered from the real built React bundle and CSS using synthetic data in Chromium: [dark normal](assets/mini-dark-normal.png), [light normal](assets/mini-light-normal.png), [critical](assets/mini-dark-critical.png), and [stale](assets/mini-dark-stale.png). They are previews of Webview content, not screenshots of the VS Code workbench.
 
 ## API constraints and verification
 
 VS Code's [StatusBarItem API](https://code.visualstudio.com/api/references/vscode-api#StatusBarItem) supports text, a `MarkdownString` tooltip, click command, accessibility information, and semantic status colors. The [command URI guide](https://code.visualstudio.com/api/extension-guides/command#command-uris) documents links in hover Markdown. The [icon reference](https://code.visualstudio.com/api/references/icons-in-labels) documents codicons in status text and Markdown. Arbitrary CSS, custom HTML layouts, and a live second-by-second countdown inside the native tooltip are unsupported here.
 
-Unit tests cover formatting, states, safety, and time math. Electron E2E verifies the real Status Bar item's values through a Test-mode probe, its command, quota updates, clipboard command, and dashboard lifecycle. It does **not** automate a mouse hover or verify native tooltip pixels. Before merging, manually hover over the item in both dark and light themes, use each quick action, and confirm that stale and critical wording remains legible.
+Unit tests cover formatting, states, safety, time math, normalized data, protocol validation, actual React DOM rendering, progress attributes, and button messages. Electron E2E verifies the real Status Bar item's values, the mini panel's React ready handshake and snapshot updates, its reuse and reopen lifecycle, and the dashboard. It does **not** automate a mouse hover or verify native tooltip pixels. Before merging, manually hover over the item in dark, light, and high contrast themes, use each quick action, and confirm that stale and critical wording remains legible.

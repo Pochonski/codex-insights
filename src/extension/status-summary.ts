@@ -1,10 +1,10 @@
 import type {DashboardData} from '../core/types';
 import type {QuotaStatus,QuotaWindow} from '../providers/quotas';
 
-export const STATUS_COMMANDS = ['codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary'] as const;
+export const STATUS_COMMANDS = ['codexInsights.openMiniPanel','codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary'] as const;
 export interface StatusSettings {compact:boolean;showWeeklyQuota:boolean;}
 export type StatusLevel = 'normal'|'warning'|'critical'|'exhausted'|'offline'|'stale'|'authentication_required'|'loading'|'error';
-export interface StatusPresentation {text:string;markdown:string;plainText:string;level:StatusLevel;accessibilityLabel:string;}
+export interface StatusPresentation {text:string;markdown:string;plainText:string;level:StatusLevel;stateLabel:string;accessibilityLabel:string;}
 
 const validPercent=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)?Math.max(0,Math.min(100,value)):null;
 const safeText=(value:string,max=60):string=>value.replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,max);
@@ -53,21 +53,21 @@ export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:Statu
  if(isCurrent&&weeklyValue!==null)statusParts.push(settings.compact&&primaryValue!==null?percent(weeklyValue):`7d ${percent(weeklyValue)}`);
  if(!isCurrent)statusParts.push(current.level==='stale'?'Stale':current.level==='authentication_required'?'Sign in':current.level==='loading'?'Loading':current.level==='error'?'Error':'Offline');
  const text=statusParts.join(' · ');
- const lines=[`### $(pulse) Codex Insights`,`**${current.label}**${quota.plan?` · ChatGPT ${mdText(planText(quota.plan))}`:''}`,updatedLabel(quota.fetchedAt,now)];
+ const lines=[`### $(pulse) Codex Insights`,`**${current.label}**${quota.plan?` · ChatGPT ${mdText(planText(quota.plan))}`:''}  \n${updatedLabel(quota.fetchedAt,now)}`];
  const plain=[`Codex Insights — ${current.label}${quota.plan?` · ChatGPT ${planText(quota.plan)}`:''}`,updatedLabel(quota.fetchedAt,now)];
- if(first||week){lines.push('---');plain.push('');}
+ if(first||week)plain.push('');
  for(const [label,window] of [['5-hour limit',first],['7-day limit',week]] as const){
   if(!window)continue;const used=validPercent(window.usedPercent);if(used===null)continue;
-  const detail=`${percent(used)} used · ${percent(100-used)} remaining`;
-  lines.push(`**${label}**${isCurrent?'':' · last known'}  `,detail+'  ',resetLabel(window.resetAt,now));
+  const detail=`${percent(used)} used · ${percent(100-used)} available`;
+  lines.push(`**${label.toUpperCase()} · ${percent(used)} used**${isCurrent?'':' · last known'}  \n${percent(100-used)} available · ${resetLabel(window.resetAt,now)}`);
   plain.push(`${label}${isCurrent?'':' (last known)'}: ${detail}; ${resetLabel(window.resetAt,now)}`);
  }
- lines.push('---','**Local tokens · all recorded history**');plain.push('','Local tokens — all recorded history');
+ plain.push('','Local tokens — all recorded history');
  const t=data.total;const tokenLine=`Input ${compactNumber(t.inputTokens)} · Output ${compactNumber(t.outputTokens)}`;
- const detailLine=`Cached input ${compactNumber(t.cachedInputTokens)} · Sessions ${data.sessions.length}`;
- lines.push(tokenLine+'  ',detailLine);plain.push(tokenLine,detailLine);
- const model=lastModel(data);if(model){lines.push(`Last observed model: ${mdText(model)}`);plain.push(`Last observed model: ${safeText(model)}`);}
- lines.push('---','[Open Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy Summary](command:codexInsights.copySummary)');
+ const detailLine=`${data.sessions.length} ${data.sessions.length===1?'session':'sessions'} · Cached input ${compactNumber(t.cachedInputTokens)}`;
+ lines.push(`**Local activity** · ${data.sessions.length} ${data.sessions.length===1?'session':'sessions'}  \n${tokenLine}`);plain.push(tokenLine,detailLine);
+ const model=lastModel(data);if(model)plain.push(`Last observed model: ${safeText(model)}`);
+ lines.push('[Mini Panel](command:codexInsights.openMiniPanel) · [Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh)');
  plain.push(`Generated: ${new Date(now).toISOString()}`);
- return {text,markdown:lines.join('\n\n'),plainText:plain.join('\n'),level:current.level,accessibilityLabel:`Codex Insights. ${current.label}. ${primaryValue!==null&&isCurrent?`Five hour quota ${percent(primaryValue)} used.`:''} Open dashboard.`};
+ return {text,markdown:lines.join('\n\n'),plainText:plain.join('\n'),level:current.level,stateLabel:current.label,accessibilityLabel:`Codex Insights. ${current.label}. ${primaryValue!==null&&isCurrent?`Five hour quota ${percent(primaryValue)} used.`:''} Open mini panel.`};
 }

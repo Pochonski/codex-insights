@@ -28,9 +28,10 @@ The test fixture is active only when VS Code supplies ExtensionMode.Test. It nev
 - A simulated quota update produces another host snapshot.
 - Closing and reopening the real dashboard panel updates the lifecycle state.
 - In v0.4.2, a Test-mode probe reads the real StatusBarItem's text, native Markdown value, trusted command allowlist, and click command. Synthetic quota updates change the item. Refresh and Copy Summary commands execute; the clipboard is restored after the assertion.
+- The v0.4.2 mini panel opens a real WebviewPanel. Its React bundle sends a ready handshake; synthetic quota updates reach that panel. Repeated opens reveal the same instance, and close/reopen creates one new instance. The dashboard still opens independently.
 
 ## Scope limits
 
-The test does not use browser automation to click controls inside the Webview DOM or hover the native Status Bar item. Filter selection, charts, custom range input, countdown rendering, and accessibility are covered by unit/integration tests and manual QA, not by pixel or DOM-level Electron automation. A future visual suite may use a maintained VS Code UI driver, but it must remain separate from this deterministic Extension Host gate.
+The Electron test does not use browser automation to click controls inside the Webview DOM or hover the native Status Bar item. A separate jsdom test executes the compiled mini React bundle, verifies quota progress attributes, and clicks Dashboard, Refresh, and Copy controls. Filter selection, charts, custom range input, countdown rendering, and visual accessibility still require unit/integration tests and manual QA; there is no pixel-level Electron automation. A future visual suite may use a maintained VS Code UI driver, but it must remain separate from this deterministic Extension Host gate.
 
 The initial local environment did not provide xvfb-run. The test also runs against the available display server after sanitizing inherited Extension Host variables; CI uses Xvfb for a consistent headless display.

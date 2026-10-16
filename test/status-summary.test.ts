@@ -12,12 +12,13 @@ describe('native status summary',()=>{
  it('renders real quota semantics, reset times and historical tokens',()=>{
   const p=formatStatus(connected(),data,settings,now);
   expect(p.text).toBe('$(pulse) Codex · 5h 68% · 7d 16%');
-  expect(p.markdown).toContain('68% used · 32% remaining');
+  expect(p.markdown).toContain('5-HOUR LIMIT · 68% used');
+  expect(p.markdown).toContain('32% available');
   expect(p.markdown).toContain('Resets in 1h 24m');
-  expect(p.markdown).toContain('Local tokens · all recorded history');
+  expect(p.markdown).toContain('Local activity');
   expect(p.markdown).toContain('Input 1.2M · Output 24.5K');
-  expect(p.markdown).toContain('Cached input 1.1M · Sessions 1');
-  expect(p.markdown).toContain('Last observed model: gpt\\-6\\-sol');
+  expect(p.plainText).toContain('1 session · Cached input 1.1M');
+  expect(p.plainText).toContain('Last observed model: gpt-6-sol');
   expect(p.plainText).toContain('Generated: 2026-10-16T12:00:00.000Z');
   expect(p.plainText).not.toContain('1.1M · Input');
  });
@@ -51,8 +52,10 @@ describe('native status summary',()=>{
  });
  it('bounds invalid percentages and timestamps',()=>{
   const high=formatStatus(connected(140,-3),data,settings,now);
-  expect(high.markdown).toContain('100% used · 0% remaining');
-  expect(high.markdown).toContain('0% used · 100% remaining');
+  expect(high.markdown).toContain('5-HOUR LIMIT · 100% used');
+  expect(high.markdown).toContain('0% available');
+  expect(high.markdown).toContain('7-DAY LIMIT · 0% used');
+  expect(high.markdown).toContain('100% available');
   const invalid=connected();invalid.buckets[0].windows[0].usedPercent=Number.NaN;
   invalid.buckets[0].windows[1].resetAt='not-a-date';
   const p=formatStatus(invalid,data,settings,now);
@@ -64,7 +67,7 @@ describe('native status summary',()=>{
   const q={...connected(),plan:'PLUS [x](command:evil)'};
   const p=formatStatus(q,data,settings,now);
   expect(p.markdown).not.toContain('[x](command:evil)');
-  expect(p.markdown).toContain('[Copy Summary](command:codexInsights.copySummary)');
-  expect(STATUS_COMMANDS).toEqual(['codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary']);
+  expect(p.markdown).toContain('[Mini Panel](command:codexInsights.openMiniPanel)');
+  expect(STATUS_COMMANDS).toEqual(['codexInsights.openMiniPanel','codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary']);
  });
 });

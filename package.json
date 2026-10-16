@@ -23,6 +23,10 @@
         "title": "Codex Insights: Open Dashboard"
       },
       {
+        "command": "codexInsights.openMiniPanel",
+        "title": "Codex Insights: Open Mini Panel"
+      },
+      {
         "command": "codexInsights.refresh",
         "title": "Codex Insights: Refresh"
       },
@@ -74,13 +78,19 @@
           "type": "boolean",
           "default": true,
           "description": "Show the 7-day quota in the status bar and hover when available."
+        },
+        "codexInsights.statusBar.clickAction": {
+          "type": "string",
+          "enum": ["miniPanel", "dashboard"],
+          "default": "miniPanel",
+          "description": "Choose what opens when the Codex Insights status bar item is clicked."
         }
       }
     }
   },
   "scripts": {
-    "build": "npm run build:extension && npm run build:webview",
-    "watch": "concurrently \"npm:build:extension -- --watch\" \"npm:build:webview -- --watch\"",
+    "build": "npm run build:extension && npm run build:webview && npm run build:mini",
+    "watch": "concurrently \"npm:build:extension -- --watch\" \"npm:build:webview -- --watch\" \"npm:build:mini -- --watch\"",
     "test": "vitest run",
     "build:e2e": "esbuild test/e2e/suite.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/e2e/suite.js",
     "test:e2e": "npm run build && npm run build:e2e && node scripts/run-e2e.mjs",
@@ -91,7 +101,9 @@
     "scan:package": "node scripts/check-sensitive-files.mjs",
     "smoke:app-server": "node scripts/smoke-app-server.mjs",
     "build:extension": "esbuild src/extension/index.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.js",
-    "build:webview": "esbuild src/webview/dashboard.js --bundle --platform=browser --format=iife --target=es2020 --minify --outfile=media/dashboard.js"
+    "build:webview": "esbuild src/webview/dashboard.js --bundle --platform=browser --format=iife --target=es2020 --minify --outfile=media/dashboard.js",
+    "build:mini": "esbuild src/webview/mini-panel.js --bundle --platform=browser --format=iife --target=es2020 --minify --outfile=media/mini-panel.js",
+    "screenshot:mini": "npm run build:mini && node scripts/render-mini-demo.mjs"
   },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",
