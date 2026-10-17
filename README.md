@@ -95,6 +95,8 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 
 `npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, Status Bar formatting, SVG progress, and React rendering tests. These tests do not generate model usage. The isolated Electron suite verifies Status Bar updates, real Webview mounting, commands, and mini panel lifecycle with synthetic data. The native hover was visually inspected in VS Code 1.90 using synthetic fixtures in dark, light, and high contrast themes; real-account comparison remains a manual release check.
 
+The dashboard's **Usage groups** count is the number of distinct IDs attached to local token events, not a verified count of independent conversations. Older indexes can contain response-item IDs such as `ctco_` because of a previous attribution error. The collector now keeps new usage with the verified `session_meta` identity, while preserving old token amounts for a separately reviewed repair. See the [session classification audit](docs/SESSION_CLASSIFICATION_AUDIT.md). Run `npm run audit:sessions` for anonymous, read-only local counts; it prints no paths, IDs, prompts, or responses.
+
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 
 ## Known limitations and roadmap

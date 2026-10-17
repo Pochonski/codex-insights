@@ -25,6 +25,11 @@ interface TokenTotals {
 
 interface ParserState {
   sessionId?: string;
+  // Set only from session_meta. Response item payload.id identifies an item, not a session.
+  canonicalSessionId?: string;
+  // Preserve the v0.4.1 fingerprint scheme so copied legacy records still deduplicate.
+  fingerprintSessionId?: string;
+  metadataChecked?: boolean;
   project?: string;
   model?: string;
   lastTotals?: TokenTotals;
@@ -161,7 +166,7 @@ function modelOf(record: Record<string, unknown>): string | undefined {
 }
 
 function initialState(): ParserState {
-  return {};
+  return { metadataChecked: true };
 }
 
 function decodeState(value: string | null | undefined): ParserState {
@@ -221,16 +226,30 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     }
 
     const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
-    const candidateSession = typeof record.session_id === 'string' ? record.session_id : typeof record.sessionId === 'string' ? record.sessionId : typeof payload.id === 'string' ? payload.id : undefined;
-    state.sessionId = candidateSession ?? state.sessionId;
+    const legacyIdentity = [record.session_id, record.sessionId, payload.id]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    if (legacyIdentity) state.fingerprintSessionId = legacyIdentity;
+    if (record.type === 'session_meta') {
+      const candidateSession = [payload.session_id, payload.id, record.session_id, record.sessionId]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      if (candidateSession) {
+        state.canonicalSessionId = candidateSession;
+        state.sessionId = candidateSession;
+      }
+    }
     state.project = projectOf(record) ?? state.project;
     state.model = modelOf(record) ?? state.model;
     const totals = totalsOf(record);
     if (!totals) {
       continue;
     }
+    if (!state.canonicalSessionId) {
+      const explicitSession = [record.session_id, record.sessionId]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      if (explicitSession) state.sessionId = explicitSession;
+    }
     const timestamp = timestampValue(record.timestamp ?? record.created_at ?? record.time) ?? Date.now();
-    const currentSession = state.sessionId ?? createHash('sha256').update(sourceFile).digest('hex').slice(0, 16);
+    const currentSession = state.canonicalSessionId ?? state.sessionId ?? createHash('sha256').update(sourceFile).digest('hex').slice(0, 16);
     let delta = totals;
     if (state.lastTotals) {
       if (state.lastTimestamp !== undefined && timestamp < state.lastTimestamp) {
@@ -267,7 +286,7 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
       outputTokens: delta.output,
       cachedInputTokens: delta.cached,
       reasoningOutputTokens: delta.reasoning,
-      fingerprint: fingerprint(record, currentSession),
+      fingerprint: fingerprint(record, state.fingerprintSessionId ?? currentSession),
     });
   }
   return { events, state, confirmedBytes, partial: content.subarray(confirmedBytes), warnings };
@@ -299,6 +318,27 @@ async function readRange(filePath: string, offset: number, length: number): Prom
   } finally {
     await handle.close();
   }
+}
+
+async function readSessionMetadata(filePath: string, size: number): Promise<{ id?: string; bytesRead: number }> {
+  const data = await readRange(filePath, 0, Math.min(size, MAX_LINE_BYTES + 1));
+  let cursor = 0;
+  while (cursor < data.length) {
+    const newline = data.indexOf(0x0a, cursor);
+    if (newline === -1) break;
+    try {
+      const record = JSON.parse(data.subarray(cursor, newline).toString('utf8')) as Record<string, unknown>;
+      if (record.type === 'session_meta' && record.payload && typeof record.payload === 'object') {
+        const payload = record.payload as Record<string, unknown>;
+        const id = [payload.session_id, payload.id].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+        return { id, bytesRead: data.length };
+      }
+    } catch {
+      // A malformed metadata line cannot establish a canonical identity.
+    }
+    cursor = newline + 1;
+  }
+  return { bytesRead: data.length };
 }
 
 function identityOf(stat: import('node:fs').Stats): string | undefined {
@@ -413,6 +453,10 @@ export class SessionIndex {
       const databaseEntries = this.database.read();
       if (databaseEntries.size > 0) {
         this.cache = databaseEntries;
+      } else if (this.cache.size > 0) {
+        // A pre-SQLite JSON index must be imported before the first incremental
+        // write; otherwise that write makes SQLite authoritative on restart.
+        this.database.sync(this.cache);
       }
     } catch {
       // SQLite is optional. The JSON fallback remains available when it is valid.
@@ -501,9 +545,24 @@ export class SessionIndex {
     }
 
     const start = reconcile ? 0 : prior?.offset ?? 0;
+    const previousState = reconcile ? initialState() : decodeState(prior?.parserState);
+    let metadataBytesRead = 0;
+    const identityWarnings: string[] = [];
+    if (prior && !reconcile && !previousState.metadataChecked && !previousState.canonicalSessionId) {
+      previousState.fingerprintSessionId ??= previousState.sessionId;
+      const metadata = await readSessionMetadata(file, stat.size);
+      metadataBytesRead = metadata.bytesRead;
+      previousState.metadataChecked = true;
+      if (metadata.id) {
+        previousState.canonicalSessionId = metadata.id;
+        previousState.sessionId = metadata.id;
+      } else {
+        identityWarnings.push('Could not verify legacy session identity in ' + path.basename(file) + '; existing grouping was retained.');
+      }
+    }
     const data = await readRange(file, start, stat.size - start);
     const generationData = !identity && !reconcile ? await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES)) : data;
-    const parser = parseSessionBuffer(data, file, reconcile ? initialState() : decodeState(prior?.parserState), start);
+    const parser = parseSessionBuffer(data, file, previousState, start);
     const offset = start + parser.confirmedBytes;
     const sourceEvents = reconcile ? prior?.events ?? [] : prior?.events ?? [];
     const existingFingerprints = new Set(sourceEvents.map((event) => event.fingerprint));
@@ -530,9 +589,9 @@ export class SessionIndex {
       file: nextFile,
       update,
       archiveFile,
-      warnings: parser.warnings,
+      warnings: [...identityWarnings, ...parser.warnings],
       metrics: {
-        bytesRead: data.length + (generationData === data ? 0 : generationData.length),
+        bytesRead: data.length + (generationData === data ? 0 : generationData.length) + metadataBytesRead,
         eventsNew: accepted.length,
         eventsDeduplicated: deduplicated,
         parseErrors: parser.warnings.filter((warning) => warning.includes('invalid JSONL')).length,
