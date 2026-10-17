@@ -27,13 +27,15 @@ async function scenario(sessionCount,eventsPerSession=100){
   const dashboardQuery=await elapsed(async()=>buildAnalyticsView(deduplication.value,{period:'all',session:'',model:'',project:''}));
   const indexStorage=path.join(dir,'index-storage');await mkdir(indexStorage);const index=new SessionIndex(path.join(indexStorage,'session-index.json'));const firstImport=await elapsed(()=>index.scan(sessions));const unchangedUpdate=await elapsed(()=>index.scan(sessions));
   for(let session=0;session<sessionCount;session+=10)await appendFile(path.join(sessions,`session-${session}.jsonl`),line(session,eventsPerSession+1,(eventsPerSession+1)*100)+'\n');
-  const changedUpdate=await elapsed(()=>index.scan(sessions));index.close();
+  const changedUpdate=await elapsed(()=>index.scan(sessions));
+  for(let session=0;session<sessionCount;session++){const file=path.join(sessions,`session-${session}.jsonl`);await writeFile(file,await readFile(file,'utf8'));}
+  const reconcileAll=await elapsed(()=>index.scan(sessions));index.close();
   const rssEnd=process.memoryUsage().rss;
-  return {sessions:sessionCount,events:processing.value.length,datasetBytes:(await Promise.all(discovery.value.map(file=>stat(file)))).reduce((sum,item)=>sum+item.size,0),discoveryMs:discovery.ms,readMs:reading.ms,processingMs:processing.ms,deduplicationMs:deduplication.ms,persistenceMs:persistence.ms,firstImportMs:firstImport.ms,firstImportBytesRead:firstImport.value.metrics.bytesRead,unchangedUpdateMs:unchangedUpdate.ms,unchangedBytesRead:unchangedUpdate.value.metrics.bytesRead,changedUpdateMs:changedUpdate.ms,changedBytesRead:changedUpdate.value.metrics.bytesRead,dashboardQueryMs:dashboardQuery.ms,rssDeltaMiB:Number(((rssEnd-rssStart)/1048576).toFixed(2)),rssEndMiB:Number((rssEnd/1048576).toFixed(2))};
+  return {sessions:sessionCount,events:processing.value.length,datasetBytes:(await Promise.all(discovery.value.map(file=>stat(file)))).reduce((sum,item)=>sum+item.size,0),discoveryMs:discovery.ms,readMs:reading.ms,processingMs:processing.ms,deduplicationMs:deduplication.ms,persistenceMs:persistence.ms,firstImportMs:firstImport.ms,firstImportBytesRead:firstImport.value.metrics.bytesRead,unchangedUpdateMs:unchangedUpdate.ms,unchangedBytesRead:unchangedUpdate.value.metrics.bytesRead,changedUpdateMs:changedUpdate.ms,changedBytesRead:changedUpdate.value.metrics.bytesRead,reconcileAllMs:reconcileAll.ms,reconcileAllBytesRead:reconcileAll.value.metrics.bytesRead,reconcileAllEventsNew:reconcileAll.value.metrics.eventsNew,dashboardQueryMs:dashboardQuery.ms,rssDeltaMiB:Number(((rssEnd-rssStart)/1048576).toFixed(2)),rssEndMiB:Number((rssEnd/1048576).toFixed(2))};
  }finally{await rm(dir,{recursive:true,force:true});}
 }
 
 try{
- const results=[];for(const count of [10,100,500,1000])results.push(await scenario(count));
+  const results=[];for(const count of [10,100,500,1000,2000])results.push(await scenario(count));
  console.log(JSON.stringify({generatedAt:new Date().toISOString(),environment:{node:process.version,platform:`${process.platform} ${process.arch}`,cpu:cpus()[0]?.model||'unknown',logicalCpus:cpus().length,totalMemoryGiB:Number((totalmem()/1073741824).toFixed(1))},methodology:{eventsPerSession:100,syntheticData:true,timing:'single measured run after fixture generation; milliseconds; no CI threshold',memory:'RSS delta and final RSS are approximate'},results},null,2));
 }finally{await rm(compiled,{recursive:true,force:true});}

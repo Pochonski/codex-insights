@@ -176,4 +176,60 @@ describe('incremental JSONL indexing', () => {
       index.close();
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
+
+  it('skips a file over the 25 MiB limit with a warning, keeps prior data, and resumes when it is replaced', async () => {
+    const f = fixture();
+    try {
+      writeFileSync(f.file, usage(100, '2026-10-15T00:00:00Z') + '\n' + usage(101, '2026-10-15T00:01:00Z') + '\n');
+      const index = new SessionIndex(f.state);
+      try {
+        const first = await index.scan(f.root);
+        expect(first.events).toHaveLength(2);
+        writeFileSync(f.file, Buffer.alloc(26 * 1024 * 1024));
+        const blocked = await index.scan(f.root);
+        expect(blocked.warnings.join(' ')).toContain('oversized');
+        expect(blocked.metrics.eventsNew).toBe(0);
+        expect(blocked.metrics.bytesRead).toBe(0);
+        expect(aggregate(blocked.events).total.inputTokens).toBe(101);
+        writeFileSync(f.file, usage(20, '2026-10-15T01:00:00Z') + '\n');
+        const resumed = await index.scan(f.root);
+        expect(resumed.warnings.join(' ')).not.toContain('oversized');
+        expect(resumed.metrics.eventsNew).toBe(1);
+        expect(aggregate(resumed.events).total.inputTokens).toBe(121);
+      } finally { index.close(); }
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20000);
+
+  it('skips an oversized JSONL line, keeps valid lines, and never re-reads the skipped bytes', async () => {
+    const f = fixture();
+    try {
+      const oversized = usage(100, '2026-10-15T00:00:00Z').slice(0, -1) + ',"pad":"' + 'x'.repeat(1024 * 1024) + '"}}';
+      writeFileSync(f.file, oversized + '\n' + usage(50, '2026-10-15T00:01:00Z') + '\n');
+      const index = new SessionIndex(f.state);
+      try {
+        const scan = await index.scan(f.root);
+        expect(scan.warnings.join(' ')).toContain('oversized JSONL line');
+        expect(scan.events.map(event => event.inputTokens)).toEqual([50]);
+        const again = await index.scan(f.root);
+        expect(again.metrics.bytesRead).toBe(0);
+        expect(again.metrics.eventsNew).toBe(0);
+      } finally { index.close(); }
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  }, 20000);
+
+  it('documents inherited cumulative counters in continuation rollouts (v0.4.2 audit: known double-count)', async () => {
+    const f = fixture();
+    try {
+      const at = (minute: number) => `2030-01-02T00:${String(minute).padStart(2, '0')}:00Z`;
+      const meta = JSON.stringify({ type: 'session_meta', payload: { id: 'conversation-a', thread_source: 'user' } });
+      writeFileSync(f.file, meta + '\n' + usage(100, at(0)) + '\n' + usage(150, at(1)) + '\n');
+      const fork = path.join(f.root, 'fork.jsonl');
+      writeFileSync(fork, meta + '\n' + usage(150, at(2)) + '\n' + usage(170, at(3)) + '\n');
+      const index = new SessionIndex(f.state);
+      try {
+        const scan = await index.scan(f.root);
+        expect(aggregate(scan.events).total.inputTokens).toBe(320);
+      } finally { index.close(); }
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
 });
