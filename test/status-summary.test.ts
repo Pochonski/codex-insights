@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {aggregate} from '../src/analytics/aggregate';
 import {emptyQuota,staleQuota,type QuotaStatus} from '../src/providers/quotas';
-import {compactNumber,formatStatus,resetLabel,STATUS_COMMANDS} from '../src/extension/status-summary';
+import {compactNumber,formatStatus,progressImage,resetLabel,STATUS_COMMANDS} from '../src/extension/status-summary';
 
 const now=Date.parse('2026-10-16T12:00:00.000Z');
 const data=aggregate([{id:'one',sessionId:'s1',timestamp:'2026-10-16T11:00:00.000Z',model:'gpt-6-sol',inputTokens:1_200_000,outputTokens:24_500,cachedInputTokens:1_100_000,reasoningOutputTokens:5_000,sourceFile:'fixture.jsonl'}]);
@@ -15,6 +15,7 @@ describe('native status summary',()=>{
   expect(p.markdown).toContain('5-HOUR LIMIT · 68% used');
   expect(p.markdown).toContain('32% available');
   expect(p.markdown).toContain('Resets in 1h 24m');
+  expect(p.markdown.match(/data:image\/svg\+xml;base64,/g)).toHaveLength(2);
   expect(p.markdown).toContain('Local activity');
   expect(p.markdown).toContain('Input 1.2M · Output 24.5K');
   expect(p.plainText).toContain('1 session · Cached input 1.1M');
@@ -67,7 +68,22 @@ describe('native status summary',()=>{
   const q={...connected(),plan:'PLUS [x](command:evil)'};
   const p=formatStatus(q,data,settings,now);
   expect(p.markdown).not.toContain('[x](command:evil)');
-  expect(p.markdown).toContain('[Mini Panel](command:codexInsights.openMiniPanel)');
-  expect(STATUS_COMMANDS).toEqual(['codexInsights.openMiniPanel','codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary']);
+  expect(p.markdown).toContain('[Dashboard](command:codexInsights.openDashboard)');
+  expect(p.markdown).not.toContain('command:codexInsights.openMiniPanel');
+  expect(STATUS_COMMANDS).toEqual(['codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary']);
+ });
+ it('renders bounded, theme-aware SVG progress without embedding account data',()=>{
+  const decode=(uri:string)=>Buffer.from(uri.split(',')[1],'base64').toString('utf8');
+  const dark=decode(progressImage(44,'dark'));
+  const light=decode(progressImage(44,'light'));
+  const critical=decode(progressImage(97,'dark'));
+  const contrast=decode(progressImage(44,'hcDark'));
+  expect(dark).toContain('width="140.8"');
+  expect(dark).toContain('#52c69b');
+  expect(light).toContain('#087b5b');
+  expect(critical).toContain('#d64c59');
+  expect(contrast).toContain('stroke="#ffffff"');
+  expect(decode(progressImage(140,'dark'))).toContain('width="318"');
+  expect(decode(progressImage(Number.NaN,'dark'))).not.toContain('NaN');
  });
 });

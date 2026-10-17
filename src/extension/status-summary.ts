@@ -1,8 +1,9 @@
 import type {DashboardData} from '../core/types';
 import type {QuotaStatus,QuotaWindow} from '../providers/quotas';
 
-export const STATUS_COMMANDS = ['codexInsights.openMiniPanel','codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary'] as const;
+export const STATUS_COMMANDS = ['codexInsights.openDashboard','codexInsights.refresh','codexInsights.copySummary'] as const;
 export interface StatusSettings {compact:boolean;showWeeklyQuota:boolean;}
+export type HoverTheme = 'dark'|'light'|'hcDark'|'hcLight';
 export type StatusLevel = 'normal'|'warning'|'critical'|'exhausted'|'offline'|'stale'|'authentication_required'|'loading'|'error';
 export interface StatusPresentation {text:string;markdown:string;plainText:string;level:StatusLevel;stateLabel:string;accessibilityLabel:string;}
 
@@ -11,6 +12,16 @@ const safeText=(value:string,max=60):string=>value.replace(/[\x00-\x1f\x7f]/g,' 
 const mdText=(value:string):string=>safeText(value).replace(/[\\`*_{}\[\]()#+.!|<>-]/g,'\\$&');
 const planText=(value:string):string=>{const clean=safeText(value);return /^(plus|pro|free|team|business|enterprise)$/i.test(clean)?clean[0].toUpperCase()+clean.slice(1).toLowerCase():clean;};
 const percent=(value:number):string=>`${Math.round(value)}%`;
+export function progressImage(usedPercent:number,theme:HoverTheme):string{
+ const used=Math.max(0,Math.min(100,Number.isFinite(usedPercent)?usedPercent:0));
+ const light=theme==='light'||theme==='hcLight',highContrast=theme==='hcDark'||theme==='hcLight';
+ const track=highContrast?'none':light?'#d0dae3':'#344453';
+ const fill=highContrast?(light?'#000000':'#ffffff'):used>=95?'#d64c59':used>=80?'#b97816':light?'#087b5b':'#52c69b';
+ const border=highContrast?` stroke="${fill}" stroke-width="2"`:'';
+ const width=+(used*3.2).toFixed(2);
+ const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="12" viewBox="0 0 320 12"><rect x="1" y="1" width="318" height="10" rx="5" fill="${track}"${border}/>${width>0?`<rect x="1" y="1" width="${Math.min(318,width)}" height="10" rx="5" fill="${fill}"/>`:''}</svg>`;
+ return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
 export const compactNumber=(value:number):string=>!Number.isFinite(value)||value<0?'—':value>=1_000_000?`${+(value/1_000_000).toFixed(1)}M`:value>=1_000?`${+(value/1_000).toFixed(1)}K`:String(Math.round(value));
 const dateMs=(value:string|null):number|null=>{const ms=value?Date.parse(value):NaN;return Number.isFinite(ms)?ms:null;};
 export function resetLabel(resetAt:string|null,now:number):string{
@@ -43,7 +54,7 @@ function lastModel(data:DashboardData):string|null{
  for(const event of data.events){if(!event.model)continue;const time=Date.parse(event.timestamp);if(Number.isFinite(time)&&(!best||time>best.time))best={model:event.model,time};}
  return best?.model??null;
 }
-export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:StatusSettings,now=Date.now()):StatusPresentation{
+export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:StatusSettings,now=Date.now(),theme:HoverTheme='dark'):StatusPresentation{
  const current=displayState(quota,now);const first=windowFor(quota,300),week=settings.showWeeklyQuota?windowFor(quota,10080):undefined;
  const isCurrent=quota.state==='connected'&&current.level!=='stale';
  const primaryValue=first?validPercent(first.usedPercent):null,weeklyValue=week?validPercent(week.usedPercent):null;
@@ -59,15 +70,15 @@ export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:Statu
  for(const [label,window] of [['5-hour limit',first],['7-day limit',week]] as const){
   if(!window)continue;const used=validPercent(window.usedPercent);if(used===null)continue;
   const detail=`${percent(used)} used · ${percent(100-used)} available`;
-  lines.push(`**${label.toUpperCase()} · ${percent(used)} used**${isCurrent?'':' · last known'}  \n${percent(100-used)} available · ${resetLabel(window.resetAt,now)}`);
+  lines.push(`**${label.toUpperCase()} · ${percent(used)} used**${isCurrent?'':' · last known'}  \n${percent(100-used)} available · ${resetLabel(window.resetAt,now)}  \n![${label}, ${percent(used)} used](${progressImage(used,theme)})`);
   plain.push(`${label}${isCurrent?'':' (last known)'}: ${detail}; ${resetLabel(window.resetAt,now)}`);
  }
  plain.push('','Local tokens — all recorded history');
  const t=data.total;const tokenLine=`Input ${compactNumber(t.inputTokens)} · Output ${compactNumber(t.outputTokens)}`;
  const detailLine=`${data.sessions.length} ${data.sessions.length===1?'session':'sessions'} · Cached input ${compactNumber(t.cachedInputTokens)}`;
- lines.push(`**Local activity** · ${data.sessions.length} ${data.sessions.length===1?'session':'sessions'}  \n${tokenLine}`);plain.push(tokenLine,detailLine);
+ lines.push(`**Local activity** · all recorded history  \n${tokenLine}  \n${detailLine}`);plain.push(tokenLine,detailLine);
  const model=lastModel(data);if(model)plain.push(`Last observed model: ${safeText(model)}`);
- lines.push('[Mini Panel](command:codexInsights.openMiniPanel) · [Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh)');
+ lines.push('[Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy](command:codexInsights.copySummary)');
  plain.push(`Generated: ${new Date(now).toISOString()}`);
- return {text,markdown:lines.join('\n\n'),plainText:plain.join('\n'),level:current.level,stateLabel:current.label,accessibilityLabel:`Codex Insights. ${current.label}. ${primaryValue!==null&&isCurrent?`Five hour quota ${percent(primaryValue)} used.`:''} Open mini panel.`};
+ return {text,markdown:lines.join('\n\n'),plainText:plain.join('\n'),level:current.level,stateLabel:current.label,accessibilityLabel:`Codex Insights. ${current.label}. ${primaryValue!==null&&isCurrent?`Five hour quota ${percent(primaryValue)} used.`:''} Open dashboard.`};
 }

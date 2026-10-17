@@ -45,9 +45,10 @@ export async function run(): Promise<void> {
 
   await waitFor(async () => (await state()).statusText.includes('5h 25%'), 'synthetic status bar quota');
   const initial = await state();
-  assert.equal(initial.statusCommand, 'codexInsights.openMiniPanel');
-  assert.deepEqual([...initial.statusTrustedCommands.enabledCommands], ['codexInsights.openMiniPanel', 'codexInsights.openDashboard', 'codexInsights.refresh', 'codexInsights.copySummary']);
+  assert.equal(initial.statusCommand, 'codexInsights.openDashboard');
+  assert.deepEqual([...initial.statusTrustedCommands.enabledCommands], ['codexInsights.openDashboard', 'codexInsights.refresh', 'codexInsights.copySummary']);
   assert.match(initial.statusTooltip, /5-HOUR LIMIT/);
+  assert.equal((initial.statusTooltip.match(/data:image\/svg\+xml;base64,/g)||[]).length,2,'native hover should include two generated quota bars');
   assert.match(initial.statusTooltip, /Local activity/);
 
   await vscode.commands.executeCommand('codexInsights.openMiniPanel');
@@ -76,6 +77,8 @@ export async function run(): Promise<void> {
   assert.ok(current.snapshots >= 2, 'the Webview should receive an updated snapshot');
   assert.ok(current.mini.updates >= 2, 'Mini Panel should receive the updated quota snapshot');
   assert.match(current.statusText, /5h 30%/, 'status bar should update with synthetic quota');
+  const image=(markdown:string)=>markdown.match(/data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+/)?.[0];
+  assert.notEqual(image(current.statusTooltip),image(initial.statusTooltip),'hover progress image should change with quota data');
 
   const previousClipboard = await vscode.env.clipboard.readText();
   try {
@@ -88,9 +91,10 @@ export async function run(): Promise<void> {
   assert.equal((await state()).quotaState, 'connected');
 
   const clickConfig=vscode.workspace.getConfiguration('codexInsights.statusBar');
-  await clickConfig.update('clickAction','dashboard',vscode.ConfigurationTarget.Global);
-  await waitFor(async () => (await state()).statusCommand==='codexInsights.openDashboard','configurable Status Bar click');
+  await clickConfig.update('clickAction','miniPanel',vscode.ConfigurationTarget.Global);
+  await waitFor(async () => (await state()).statusCommand==='codexInsights.openMiniPanel','optional Mini Panel click');
   await clickConfig.update('clickAction',undefined,vscode.ConfigurationTarget.Global);
+  await waitFor(async () => (await state()).statusCommand==='codexInsights.openDashboard','dashboard default click');
 
   await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
   await waitFor(async () => (await state()).panelDisposed, 'dashboard disposal');

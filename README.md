@@ -2,7 +2,7 @@
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.4.2** adds a native Status Bar hover and an interactive React quick monitor. The full analytics dashboard remains available.
+Version **0.4.2** adds an automatic native Status Bar hover with visual quota bars. The full React analytics dashboard remains available; the editor-based mini panel is an optional command.
 
 ## Features
 
@@ -12,26 +12,28 @@ Version **0.4.2** adds a native Status Bar hover and an interactive React quick 
 - Explore timestamped token charts, sessions, models, and projects with combined period, custom date range, session, model, and project filters.
 - Persist quota samples and normalized session entities in SQLite, with local JSON fallback for runtimes without `node:sqlite`.
 - Deduplicate repeated observations, retain indexed history across restarts, and keep credentials under Codex CLI's control.
-- Read a quota summary directly in the VS Code Status Bar and native hover; click to open a compact React mini panel with progress bars and quick actions.
+- Hover over the VS Code Status Bar indicator to see official quota percentages, visual progress bars, reset times, and local activity without clicking. Click to open the full dashboard.
+
+![Native Codex Insights Status Bar hover in an isolated VS Code instance with synthetic data](docs/assets/status-hover-dark.png)
+
+*Actual VS Code 1.90 native hover with synthetic data.* [Light theme](docs/assets/status-hover-light.png) · [High contrast](docs/assets/status-hover-high-contrast.png)
 
 ![Codex Insights dashboard showing synthetic quota and token data](docs/assets/dashboard-demo.png)
 
 *Demo dashboard with synthetic data.*
 
-![Codex Insights mini panel in a dark theme, showing synthetic quota and token data](docs/assets/mini-dark-normal.png)
-
-*Demo mini panel with synthetic data. Rendered from the real React bundle; the VS Code workbench frame is not included.* [Light theme](docs/assets/mini-light-normal.png) · [Critical](docs/assets/mini-dark-critical.png) · [Stale](docs/assets/mini-dark-stale.png)
+The optional [React mini panel preview](docs/assets/mini-dark-normal.png) is an editor Webview and does not open on hover or on Status Bar click by default.
 
 The Status Bar hover uses VS Code's native Markdown tooltip. Its quota percentages mean **used**, and its token totals cover **all recorded local history**. A sample with synthetic data:
 
 ```text
 Codex Insights · Connected · ChatGPT Plus
-5-hour limit: 68% used · 32% remaining · Resets in 1h 24m
-7-day limit: 16% used · 84% remaining · Resets in 6d 19h
-Local tokens · all recorded history: Input 1.2M · Output 24.5K
+5-hour limit: 68% used · 32% available · Resets in 1h 24m
+7-day limit: 16% used · 84% available · Resets in 6d 19h
+Local activity · all recorded history: Input 1.2M · Output 24.5K
 ```
 
-The hover distinguishes loading, sign-in, offline, stale, warning (80% used), critical (95% used), and exhausted (100% used) states. Old samples are labeled **last known**. Click the indicator to open the mini panel, or set `codexInsights.statusBar.clickAction` to `dashboard` to preserve the previous click behavior. The hover links to **Mini Panel**, **Dashboard**, and **Refresh**. The mini panel offers **Dashboard**, **Refresh**, and **Copy** controls; all four commands are also in the Command Palette. Copy Summary writes plain text with its generation time and no credentials or conversation content. See [Status Summary design and limitations](docs/STATUS_SUMMARY_0.4.2.md).
+The hover distinguishes loading, sign-in, offline, stale, warning (80% used), critical (95% used), and exhausted (100% used) states. Old samples are labeled **last known**. The hover links to **Dashboard**, **Refresh**, and **Copy**. Click the indicator to open the dashboard; set `codexInsights.statusBar.clickAction` to `miniPanel` only if you prefer the optional editor panel. Copy Summary writes plain text with its generation time and no credentials or conversation content. See [Status Summary design and limitations](docs/STATUS_SUMMARY_0.4.2.md).
 
 ## Requirements and installation
 
@@ -87,11 +89,11 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 | `codexInsights.quotaRefreshSeconds` | Quota polling interval, minimum 60 seconds. |
 | `codexInsights.statusBar.compact` | Shorter quota labels in the Status Bar; default `false`. |
 | `codexInsights.statusBar.showWeeklyQuota` | Include the 7-day quota in the Status Bar and hover; default `true`. |
-| `codexInsights.statusBar.clickAction` | `miniPanel` (default) or `dashboard` when clicking the Status Bar item. |
+| `codexInsights.statusBar.clickAction` | `dashboard` (default) or optional `miniPanel` when clicking the Status Bar item. |
 
 ## Testing and troubleshooting
 
-`npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, Status Bar formatting, and React rendering tests. These tests do not generate model usage. The isolated Electron suite verifies Status Bar updates, real Webview mounting, commands, and mini panel lifecycle with synthetic data. React buttons are exercised in a DOM test. The native hover still needs visual review in a regular VS Code installation before release.
+`npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, Status Bar formatting, SVG progress, and React rendering tests. These tests do not generate model usage. The isolated Electron suite verifies Status Bar updates, real Webview mounting, commands, and mini panel lifecycle with synthetic data. The native hover was visually inspected in VS Code 1.90 using synthetic fixtures in dark, light, and high contrast themes; real-account comparison remains a manual release check.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 

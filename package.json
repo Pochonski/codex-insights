@@ -82,7 +82,7 @@
         "codexInsights.statusBar.clickAction": {
           "type": "string",
           "enum": ["miniPanel", "dashboard"],
-          "default": "miniPanel",
+          "default": "dashboard",
           "description": "Choose what opens when the Codex Insights status bar item is clicked."
         }
       }
