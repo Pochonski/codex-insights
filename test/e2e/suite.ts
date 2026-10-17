@@ -50,6 +50,7 @@ export async function run(): Promise<void> {
   assert.match(initial.statusTooltip, /5-HOUR LIMIT/);
   assert.equal((initial.statusTooltip.match(/data:image\/svg\+xml;base64,/g)||[]).length,2,'native hover should include two generated quota bars');
   assert.match(initial.statusTooltip, /Local activity/);
+  assert.match(initial.statusTooltip, /Recorded usage groups 1/);
 
   await vscode.commands.executeCommand('codexInsights.openMiniPanel');
   await waitFor(async () => {const mini=(await state()).mini;return mini.created&&mini.ready&&mini.updates>0;}, 'Mini Panel React ready handshake');

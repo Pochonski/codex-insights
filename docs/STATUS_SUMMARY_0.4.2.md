@@ -30,7 +30,7 @@ Updated 12s ago
 
 **Local activity** · all recorded history
 Input 146.6M · Output 716K
-149 sessions · Cached input 142.8M
+Recorded usage groups 149 · Cached input 142.8M
 
 [Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy](command:codexInsights.copySummary)
 ```
@@ -47,7 +47,7 @@ The Status Bar click runs `codexInsights.openDashboard` by default. Set `codexIn
 
 The optional mini panel uses an official `vscode.WebviewPanel` in the editor area. It is available through **Codex Insights: Open Mini Panel** or the explicit click preference, but it does not replace the automatic hover. One controller reuses and reveals the existing panel on repeated opens. The panel receives a normalized summary derived from the same in-memory quota and analytics data as the hover and full dashboard. Opening it starts no extra App Server process or polling loop.
 
-React shows each available quota window with an accessible progress bar, reset time and absolute date tooltip, plus all-history input, output, sessions, cached input share, and last observed model. Dashboard, Refresh, and Copy buttons send fixed typed messages to the host. Only `mini/ready`, `mini/refresh`, `mini/openDashboard`, and `mini/copySummary` are accepted; extra payloads are rejected. The Webview receives no account ID, credentials, prompts, or conversation content. It has local `media/` resource roots, nonce-based scripts, and a restrictive CSP. A local 15-second timer updates relative labels and is removed on unmount.
+React shows each available quota window with an accessible progress bar, reset time and absolute date tooltip, plus all-history input, output, recorded usage groups, cached input share, and last observed model. A recorded usage group is a distinct stored ID, not necessarily an independent conversation. Dashboard, Refresh, and Copy buttons send fixed typed messages to the host. Only `mini/ready`, `mini/refresh`, `mini/openDashboard`, and `mini/copySummary` are accepted; extra payloads are rejected. The Webview receives no account ID, credentials, prompts, or conversation content. It has local `media/` resource roots, nonce-based scripts, and a restrictive CSP. A local 15-second timer updates relative labels and is removed on unmount.
 
 The demo screenshots are rendered from the real built React bundle and CSS using synthetic data in Chromium: [dark normal](assets/mini-dark-normal.png), [light normal](assets/mini-light-normal.png), [critical](assets/mini-dark-critical.png), and [stale](assets/mini-dark-stale.png). They are previews of Webview content, not screenshots of the VS Code workbench.
 
@@ -57,6 +57,6 @@ VS Code's [StatusBarItem API](https://code.visualstudio.com/api/references/vscod
 
 ## Actual hover image experiment
 
-Using an isolated VS Code 1.90.0 Extension Development Host with synthetic quotas, we moved the pointer onto the real Status Bar item and captured the native tooltip. Three Markdown image sources rendered in that tooltip: `data:image/png;base64`, `data:image/svg+xml;base64`, and a relative PNG resolved through `MarkdownString.baseUri` to a local file. The SVG data URI was selected because it stays crisp at display scaling and avoids filesystem writes or remote-resource handling. The screenshots are from VS Code itself: [dark](assets/status-hover-dark.png), [light](assets/status-hover-light.png), [high contrast](assets/status-hover-high-contrast.png). No account data or real Codex sessions were used.
+Using an isolated VS Code 1.90.0 Extension Development Host with synthetic quotas, we moved the pointer onto the real Status Bar item and captured the native tooltip. Three Markdown image sources rendered in that tooltip: `data:image/png;base64`, `data:image/svg+xml;base64`, and a relative PNG resolved through `MarkdownString.baseUri` to a local file. The SVG data URI was selected because it stays crisp at display scaling and avoids filesystem writes or remote-resource handling. The [dark](assets/status-hover-dark.png), [light](assets/status-hover-light.png), and [high contrast](assets/status-hover-high-contrast.png) captures prove image rendering in the native hover; they predate the session-label correction and still show the old wording. The current formatter says **Recorded usage groups**, as covered by regression tests. A fresh visual hover check remains part of manual PR #4 QA. No account data or real Codex sessions were used.
 
 Unit tests cover formatting, SVG output, themes, states, safety, time math, normalized data, protocol validation, actual React DOM rendering, progress attributes, and button messages. Electron E2E verifies the real Status Bar item's Markdown image URIs, default dashboard click, optional mini click, snapshot updates, and dashboard lifecycle. The screenshot experiment verified actual hover pixels separately; it is not a CI gate because it depends on a graphical Hyprland session. Before merging, compare real-account percentages and reset times against the dashboard and check hover actions and stale/critical wording in a normal installation.

@@ -20,6 +20,8 @@ describe('compiled React mini panel',()=>{
    expect(body.textContent).toContain('Weekly quota');
    expect(body.textContent).toContain('44%');
    expect(body.textContent).toContain('146.6M');
+   expect(body.textContent).toContain('RECORDED GROUPS');
+   expect(body.textContent).not.toContain('SESSIONS');
    expect(body.textContent).toContain('97.4% of input');
    expect(body.textContent).toContain('gpt-6-sol');
    const bars=body.querySelectorAll('[role="progressbar"]');

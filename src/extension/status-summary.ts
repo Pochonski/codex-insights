@@ -75,7 +75,7 @@ export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:Statu
  }
  plain.push('','Local tokens — all recorded history');
  const t=data.total;const tokenLine=`Input ${compactNumber(t.inputTokens)} · Output ${compactNumber(t.outputTokens)}`;
- const detailLine=`${data.sessions.length} ${data.sessions.length===1?'session':'sessions'} · Cached input ${compactNumber(t.cachedInputTokens)}`;
+ const detailLine=`Recorded usage groups ${data.sessions.length} · Cached input ${compactNumber(t.cachedInputTokens)}`;
  lines.push(`**Local activity** · all recorded history  \n${tokenLine}  \n${detailLine}`);plain.push(tokenLine,detailLine);
  const model=lastModel(data);if(model)plain.push(`Last observed model: ${safeText(model)}`);
  lines.push('[Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy](command:codexInsights.copySummary)');

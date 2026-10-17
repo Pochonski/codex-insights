@@ -18,10 +18,19 @@ describe('native status summary',()=>{
   expect(p.markdown.match(/data:image\/svg\+xml;base64,/g)).toHaveLength(2);
   expect(p.markdown).toContain('Local activity');
   expect(p.markdown).toContain('Input 1.2M · Output 24.5K');
-  expect(p.plainText).toContain('1 session · Cached input 1.1M');
+  expect(p.plainText).toContain('Recorded usage groups 1 · Cached input 1.1M');
+  expect(p.markdown).not.toContain('1 conversation');
   expect(p.plainText).toContain('Last observed model: gpt-6-sol');
   expect(p.plainText).toContain('Generated: 2026-10-16T12:00:00.000Z');
   expect(p.plainText).not.toContain('1.1M · Input');
+ });
+ it('labels a legacy tool-item ID as a recorded usage group, not a conversation',()=>{
+  const legacy=aggregate([{id:'legacy',sessionId:'ctco_synthetic',timestamp:'2026-10-16T11:00:00.000Z',inputTokens:120,outputTokens:12,cachedInputTokens:100,reasoningOutputTokens:2,sourceFile:'fixture.jsonl'}]);
+  const summary=formatStatus(connected(),legacy,settings,now);
+  expect(summary.markdown).toContain('Recorded usage groups 1');
+  expect(summary.plainText).toContain('Recorded usage groups 1');
+  expect(summary.markdown).not.toContain('conversation');
+  expect(summary.plainText).toContain('Input 120 · Output 12');
  });
  it('supports compact and weekly visibility settings',()=>{
   expect(formatStatus(connected(),data,{compact:true,showWeeklyQuota:true},now).text).toBe('$(pulse) Codex · 68% · 16%');
