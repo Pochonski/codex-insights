@@ -1,5 +1,6 @@
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {EventEmitter} from 'node:events';
+import {version as extensionVersion} from '../../package.json';
 import type {InitializeParams} from '../protocol/generated/InitializeParams';
 
 type JsonRecord=Record<string,unknown>;
@@ -48,7 +49,7 @@ export class CodexAppServerClient extends EventEmitter {
   child.stderr.on('data',()=>{});
   child.on('error',error=>this.handleTransportFailure(child,new Error(`Unable to launch Codex App Server: ${error.message}`)));
   child.on('exit',(code,signal)=>this.handleTransportFailure(child,new Error(`Codex App Server stopped (${String(code??signal)})`)));
-  const params:InitializeParams={clientInfo:{name:'codex-insights',title:'Codex Insights',version:'0.3.1'},capabilities:null};
+  const params:InitializeParams={clientInfo:{name:'codex-insights',title:'Codex Insights',version:extensionVersion},capabilities:null};
   try{
    await this.requestInternal('initialize',params);
    this.notify('initialized',{});
