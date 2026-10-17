@@ -19,11 +19,11 @@ The following counts came from a read-only query of the extension's SQLite datab
 | Recorded ID shape | Distinct IDs | Events | Input tokens | Output tokens | Interpretation |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `ctco_` item IDs | 310 | 310 | 71,941,785 | 296,643 | Tool-output IDs misused as session IDs. |
-| UUID-form IDs | 3 | 668 | 98,175,017 | 481,536 | Two match current user-origin `session_meta`; one matches an archived source filename, but its original JSONL is unavailable for direct verification. |
-| Other item-shaped IDs | 16 | 17 | 1,717,304 | 9,009 | Consistent with response message/function-output IDs; not verified conversations. |
+| UUID-form IDs | 2 | 668 | 98,175,017 | 481,536 | Both match current user-origin `session_meta`; one also occurs in an archived source generation whose original JSONL is unavailable. |
+| Other item-shaped IDs | 17 | 17 | 1,717,304 | 9,009 | Consistent with response message/function-output IDs; not verified conversations. |
 | **Total** | **329** | **995** | **171,834,106** | **787,188** | Distinct recorded IDs, not conversation count. |
 
-Thus the screenshot's 329 entries included **at least 326 item-shaped technical IDs**. Two stored UUID IDs were directly verified against current user-origin `session_meta`. Four current JSONL files contained user-origin metadata, but one had no recorded token event at that snapshot and an archived generation cannot be fully reconstructed from the database. The exact lifetime count of independent conversations is therefore **not provable from these rows alone**. No auxiliary/subagent relationship was found in the inspected metadata; `ctco_` must not be labeled a subagent.
+Thus the screenshot's 329 entries included **327 item-shaped technical IDs**. Two stored UUID IDs were directly verified against current user-origin `session_meta`. Four current JSONL files contained user-origin metadata, but one had no recorded token event at that snapshot and an archived generation cannot be fully reconstructed from the database. The exact lifetime count of independent conversations is therefore **not provable from these rows alone**. No auxiliary/subagent relationship was found in the inspected metadata; `ctco_` must not be labeled a subagent.
 
 A later run of the anonymous script, while Codex was active, observed 358 recorded IDs and 1,024 stored events. That increase is expected for a live source with the old attribution bug. It does not revise what the earlier 329 screenshot represented.
 
