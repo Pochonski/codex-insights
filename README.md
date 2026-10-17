@@ -74,6 +74,8 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 
 `npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, and React rendering tests. These tests do not generate model usage. The v0.3.0 dashboard baseline was manually validated in VS Code for real quotas, countdowns, charts, all four filters, and persistence; 0.3.1 still requires a final manual real-account smoke test before release.
 
+The dashboard's **Usage groups** count is the number of distinct IDs attached to local token events, not a verified count of independent conversations. Older indexes can contain response-item IDs such as `ctco_` because of a previous attribution error. The collector now keeps new usage with the verified `session_meta` identity, while preserving old token amounts for a separately reviewed repair. See the [session classification audit](docs/SESSION_CLASSIFICATION_AUDIT.md). Run `npm run audit:sessions` for anonymous, read-only local counts; it prints no paths, IDs, prompts, or responses.
+
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 
 ## Known limitations and roadmap
