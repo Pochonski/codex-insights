@@ -21,4 +21,9 @@ describe('combined analytics filters',()=>{
   expect(view.sessionRows[0].id).toBe('canonical-recent');
   expect(view.options.sessions[0].id).toBe('canonical-recent');
  });
+ it('propagates a scan notice without altering computed rows',()=>{
+  const view=buildAnalyticsView({...data,scanNotice:'Local session scan failed; showing the last successful data.'},{period:'all'},now);
+  expect(view.scanNotice).toBe('Local session scan failed; showing the last successful data.');
+  expect(buildAnalyticsView(data,{period:'all'},now).scanNotice).toBeNull();
+ });
 });

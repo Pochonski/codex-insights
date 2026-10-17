@@ -53,6 +53,13 @@ describe('native status summary',()=>{
   expect(formatStatus({...emptyQuota('error'),connectionState:'offline'},data,settings,now).level).toBe('offline');
   expect(formatStatus(emptyQuota('error'),data,settings,now).text).toContain('Error');
  });
+ it('surfaces an explicit local scan failure instead of a silent success',()=>{
+  const failed=formatStatus(connected(),{...data,scanNotice:'Local session scan failed; showing the last successful data.'},settings,now);
+  expect(failed.markdown).toContain('Local session scan failed');
+  expect(failed.plainText).toContain('Local session scan failed; showing the last successful data.');
+  expect(failed.text).toBe('$(pulse) Codex · 5h 68% · 7d 16%');
+  expect(formatStatus(connected(),data,settings,now).markdown).not.toContain('scan failed');
+ });
  it('handles loading, authentication and missing quotas',()=>{
   expect(formatStatus(emptyQuota(),data,settings,now).level).toBe('loading');
   expect(formatStatus(emptyQuota('signed-out'),data,settings,now).level).toBe('authentication_required');

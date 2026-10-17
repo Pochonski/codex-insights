@@ -77,6 +77,7 @@ export function formatStatus(quota:QuotaStatus,data:DashboardData,settings:Statu
  const t=data.total;const tokenLine=`Input ${compactNumber(t.inputTokens)} · Output ${compactNumber(t.outputTokens)}`;
  const detailLine=`Recorded usage groups ${data.sessions.length} · Cached input ${compactNumber(t.cachedInputTokens)}`;
  lines.push(`**Local activity** · all recorded history  \n${tokenLine}  \n${detailLine}`);plain.push(tokenLine,detailLine);
+ if(data.scanNotice){lines.push('*'+mdText(data.scanNotice)+'*');plain.push(data.scanNotice);}
  const model=lastModel(data);if(model)plain.push(`Last observed model: ${safeText(model)}`);
  lines.push('[Dashboard](command:codexInsights.openDashboard) · [Refresh](command:codexInsights.refresh) · [Copy](command:codexInsights.copySummary)');
  plain.push(`Generated: ${new Date(now).toISOString()}`);

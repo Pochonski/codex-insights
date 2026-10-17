@@ -5,6 +5,17 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+interface PostedSnapshot{analytics:{scanNotice?:string|null;eventCount?:number;total?:{inputTokens?:number}}}
+const waitForSnapshot=async(posted:unknown[],predicate:(snap:PostedSnapshot)=>boolean):Promise<PostedSnapshot>=>{
+ const deadline=Date.now()+8000;
+ while(Date.now()<deadline){
+  const snapshots=posted.filter(m=>(m as {type?:string}).type==='snapshot') as PostedSnapshot[];
+  const last=snapshots[snapshots.length-1];
+  if(last&&predicate(last))return last;
+  await wait(25);
+ }
+ throw new Error('Timed out waiting for snapshot condition');
+};
 describe('Extension Host lifecycle (simulated VS Code)',()=>{
  it('registers dashboard, exchanges a snapshot, and releases resources',async()=>{
   const dir=mkdtempSync(path.join(tmpdir(),'codex-host-'));const sessions=path.join(dir,'sessions');const {mkdirSync}=await import('node:fs');mkdirSync(sessions);
@@ -16,4 +27,31 @@ describe('Extension Host lifecycle (simulated VS Code)',()=>{
   const module={exports:{} as Record<string,(...args:unknown[])=>void>};const sandbox={module,exports:module.exports,require:(name:string)=>name==='vscode'?vscode:require(name),process,Buffer,setTimeout,clearTimeout,setInterval,clearInterval:(timer:NodeJS.Timeout)=>{clearedTimers++;clearInterval(timer);},URL,console};
   try{vm.runInNewContext(code,sandbox,{filename:'extension.js'});module.exports.activate({subscriptions:[],globalStorageUri:uri(dir),extensionUri:uri(dir)});expect(commands.has('codexInsights.openDashboard')).toBe(true);expect(commands.has('codexInsights.copySummary')).toBe(true);commands.get('codexInsights.openDashboard')?.();expect(panel.webview.html).toContain("default-src 'none'");receive({command:'ready',filters:{period:'all'}});await wait(60);expect(posted.some(m=>(m as {type?:string}).type==='snapshot')).toBe(true);await module.exports.deactivate();expect(statusDisposed).toBe(true);expect(panelDisposed).toBe(true);expect(clearedTimers).toBeGreaterThanOrEqual(3);}finally{module.exports.deactivate?.();rmSync(dir,{recursive:true,force:true});}
  },5000);
+ it('reports an explicit scan failure instead of a silent success and recovers on the next scan',async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),'codex-host-fail-'));
+  const sessions=path.join(dir,'sessions');const {mkdirSync,writeFileSync,chmodSync}=await import('node:fs');mkdirSync(sessions);
+  writeFileSync(path.join(sessions,'event.jsonl'),JSON.stringify({timestamp:'2026-10-16T12:00:00.000Z',type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:42,output_tokens:7,cached_input_tokens:0,reasoning_output_tokens:0}}}})+'\n');
+  chmodSync(dir,0o555);
+  const commands=new Map<string,()=>void>();const posted:unknown[]=[];const logged:string[]=[];let receive:(m:unknown)=>void=()=>{};
+  const uri=(p:string)=>({path:p,fsPath:p,with:({path:q}:{path:string})=>uri(q),toString:()=>`file://${p}`});
+  const panel={webview:{cspSource:'vscode-resource:',asWebviewUri:(u:unknown)=>u,onDidReceiveMessage:(fn:(m:unknown)=>void)=>{receive=fn;return {dispose(){}};},postMessage:(m:unknown)=>{posted.push(m);return Promise.resolve(true);},html:''},reveal(){},onDidDispose:()=>({dispose(){}}),dispose(){}};
+  const vscode={StatusBarAlignment:{Right:2},ViewColumn:{One:1},MarkdownString:class{value:string;isTrusted:unknown;constructor(value:string){this.value=value;}},ThemeColor:class{constructor(public id:string){}},Uri:{joinPath:(u:{path:string},name:string)=>uri(path.join(u.path,name)),parse:(value:string)=>value},window:{createStatusBarItem:()=>({show(){},dispose(){},text:'',tooltip:'',command:''}),createWebviewPanel:()=>panel,createOutputChannel:()=>({appendLine:(line:string)=>logged.push(line),dispose(){}}),showWarningMessage(){},showErrorMessage(){}},workspace:{getConfiguration:()=>({get:(key:string,defaultValue:unknown)=>({sessionsPath:sessions,codexExecutable:'/does/not/exist/codex'} as Record<string,unknown>)[key]??defaultValue}),onDidChangeConfiguration:()=>({dispose(){}})},commands:{registerCommand:(name:string,fn:()=>void)=>{commands.set(name,fn);return {dispose(){commands.delete(name);}};}},env:{openExternal:async()=>true,clipboard:{writeText:async()=>{}}}};
+  const code=buildSync({entryPoints:['src/extension/index.ts'],bundle:true,platform:'node',format:'cjs',target:'node20',external:['vscode'],write:false}).outputFiles[0].text;
+   const module={exports:{} as Record<string,(...args:unknown[])=>void>};const sandbox={module,exports:module.exports,require:(name:string)=>name==='vscode'?vscode:require(name),process,Buffer,performance,setTimeout,clearTimeout,setInterval,clearInterval,URL,console};
+  try{
+   vm.runInNewContext(code,sandbox,{filename:'extension.js'});module.exports.activate({subscriptions:[],globalStorageUri:uri(dir),extensionUri:uri(dir)});
+   commands.get('codexInsights.openDashboard')?.();receive({command:'ready',filters:{period:'all'}});
+   const failed=await waitForSnapshot(posted,snap=>snap.analytics?.scanNotice==='Local session scan failed; showing the last successful data.');
+   expect(failed.analytics.eventCount).toBe(0);
+   const log=logged.join('\n');
+   expect(log).toContain('scan failed');
+   expect(log).not.toContain(dir);
+   expect(log).not.toContain(process.env.HOME||'/home/');
+   chmodSync(dir,0o700);
+   commands.get('codexInsights.refresh')?.();
+   const recovered=await waitForSnapshot(posted,snap=>snap.analytics?.scanNotice===null&&snap.analytics?.eventCount===1);
+   expect(recovered.analytics.total?.inputTokens).toBe(42);
+   await module.exports.deactivate();
+  }finally{chmodSync(dir,0o700);module.exports.deactivate?.();rmSync(dir,{recursive:true,force:true});}
+ },15000);
 });
