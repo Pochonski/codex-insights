@@ -29,32 +29,36 @@ async function filesUnder(root) {
   return found;
 }
 
-const metadata = { jsonlFiles: 0, userOriginRollouts: 0, otherOrUnknownOriginRollouts: 0, customToolOutputIds: 0, tokenCountRecords: 0, invalidLines: 0 };
+const metadata = { jsonlFiles: 0, unreadableFiles: 0, userOriginRollouts: 0, otherOrUnknownOriginRollouts: 0, customToolOutputIds: 0, tokenCountRecords: 0, invalidLines: 0 };
 const verifiedUserIds = new Set();
 for (const file of await filesUnder(sessions)) {
   metadata.jsonlFiles++;
-  const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  for await (const line of lines) {
-    if (!line) continue;
-    let record;
-    try { record = JSON.parse(line); } catch { metadata.invalidLines++; continue; }
-    const payload = record?.payload && typeof record.payload === 'object' ? record.payload : {};
-    if (record.type === 'session_meta') {
-      if (payload.thread_source === 'user' && typeof (payload.session_id || payload.id) === 'string') {
-        metadata.userOriginRollouts++;
-        verifiedUserIds.add(payload.session_id || payload.id);
-      } else metadata.otherOrUnknownOriginRollouts++;
+  try {
+    const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line) continue;
+      let record;
+      try { record = JSON.parse(line); } catch { metadata.invalidLines++; continue; }
+      const payload = record?.payload && typeof record.payload === 'object' ? record.payload : {};
+      if (record.type === 'session_meta') {
+        if (payload.thread_source === 'user' && typeof (payload.session_id || payload.id) === 'string') {
+          metadata.userOriginRollouts++;
+          verifiedUserIds.add(payload.session_id || payload.id);
+        } else metadata.otherOrUnknownOriginRollouts++;
+      }
+      if (record.type === 'response_item' && payload.type === 'custom_tool_call_output' && typeof payload.id === 'string' && payload.id.startsWith('ctco_')) metadata.customToolOutputIds++;
+      if (record.type === 'event_msg' && payload.type === 'token_count') metadata.tokenCountRecords++;
     }
-    if (record.type === 'response_item' && payload.type === 'custom_tool_call_output' && typeof payload.id === 'string' && payload.id.startsWith('ctco_')) metadata.customToolOutputIds++;
-    if (record.type === 'event_msg' && payload.type === 'token_count') metadata.tokenCountRecords++;
-  }
+  } catch { metadata.unreadableFiles++; }
 }
 
 const dbPath = path.join(storage, 'insights.sqlite');
 let database = null;
+let databaseError = null;
 if (existsSync(dbPath)) {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  let db;
   try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
     const rows = db.prepare(`SELECT session_id, COUNT(*) AS events, SUM(input_tokens) AS input,
       SUM(output_tokens) AS output, SUM(cached_input_tokens) AS cached,
       SUM(reasoning_output_tokens) AS reasoning FROM token_events GROUP BY session_id`).all();
@@ -80,6 +84,7 @@ if (existsSync(dbPath)) {
       duplicateFingerprints: Number(db.prepare('SELECT COUNT(*) AS n FROM (SELECT fingerprint FROM token_events WHERE fingerprint IS NOT NULL GROUP BY fingerprint HAVING COUNT(*) > 1)').get().n),
       categories: kinds,
     };
-  } finally { db.close(); }
+  } catch { databaseError = 'The SQLite database could not be read.'; }
+  finally { db?.close(); }
 }
-console.log(JSON.stringify({ metadata, database, note: 'Counts are a read-only snapshot; the files may change while Codex is running. IDs and paths are intentionally omitted.' }, null, 2));
+console.log(JSON.stringify({ metadata, database, databaseError, note: 'Counts are a read-only snapshot; the files may change while Codex is running. IDs and paths are intentionally omitted.' }, null, 2));
