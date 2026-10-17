@@ -27,9 +27,12 @@ The test fixture is active only when VS Code supplies ExtensionMode.Test. It nev
 - The host sends dashboard snapshots containing synthetic data and a connected quota state.
 - A simulated quota update produces another host snapshot.
 - Closing and reopening the real dashboard panel updates the lifecycle state.
+- In v0.4.2, a Test-mode probe reads the real StatusBarItem's text, native Markdown value, trusted command allowlist, and click command. Synthetic quota updates change the item. Refresh and Copy Summary commands execute; the clipboard is restored after the assertion.
+- The v0.4.2 hover assertion checks two generated SVG `data:` images and confirms the default click opens the dashboard; the mini panel click remains an optional setting.
+- The v0.4.2 mini panel opens a real WebviewPanel. Its React bundle sends a ready handshake; synthetic quota updates reach that panel. Repeated opens reveal the same instance, and close/reopen creates one new instance. The dashboard still opens independently.
 
 ## Scope limits
 
-The test does not use browser automation to click controls inside the Webview DOM. Filter selection, charts, custom range input, countdown rendering, and accessibility are covered by unit/integration tests and manual QA, not by pixel or DOM-level Electron automation. A future visual suite may use a maintained VS Code UI driver, but it must remain separate from this deterministic Extension Host gate.
+The automated Electron CI test does not move the mouse or click controls inside the Webview DOM. A separate jsdom test executes the compiled mini React bundle, verifies quota progress attributes, and clicks Dashboard, Refresh, and Copy controls. An isolated graphical VS Code 1.90 instance was also used for one-off manual hover capture in dark, light, and high contrast themes; those real hover screenshots are in `docs/assets/status-hover-*.png`. This pixel check is not a CI gate because it depends on a graphical Hyprland session. Filter selection, charts, custom range input, and real-account accuracy still require their existing tests and manual QA.
 
 The initial local environment did not provide xvfb-run. The test also runs against the available display server after sanitizing inherited Extension Host variables; CI uses Xvfb for a consistent headless display.

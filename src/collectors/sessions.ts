@@ -72,16 +72,19 @@ interface FileImportResult {
 export interface SessionSource {
   readonly root: string;
   readonly stateFile: string;
+  readonly maxFiles: number;
   findSessionFiles(): Promise<string[]>;
 }
 
 export class DefaultSessionSource implements SessionSource {
   public readonly root: string;
   public readonly stateFile: string;
+  public readonly maxFiles: number;
 
-  public constructor(root = path.join(os.homedir(), '.codex', 'sessions'), stateFile = path.join(os.homedir(), '.codex-insights', 'session-index.json')) {
+  public constructor(root = path.join(os.homedir(), '.codex', 'sessions'), stateFile = path.join(os.homedir(), '.codex-insights', 'session-index.json'), maxFiles = 2000) {
     this.root = root;
     this.stateFile = stateFile;
+    this.maxFiles = maxFiles;
   }
 
   public async findSessionFiles(): Promise<string[]> {
@@ -106,7 +109,9 @@ export class DefaultSessionSource implements SessionSource {
       }
     };
     await visit(this.root);
-    return results.slice(0, 2000);
+    // Deterministic selection: keep the newest names when the discovery limit truncates.
+    results.sort();
+    return results.slice(Math.max(0, results.length - this.maxFiles));
   }
 }
 
@@ -398,7 +403,7 @@ export class SessionIndex {
 
   public constructor(stateFileOrSource: string | SessionSource = new DefaultSessionSource(), database?: SessionDatabase) {
     this.source = typeof stateFileOrSource === 'string'
-      ? { root: defaultSessionsPath(), stateFile: stateFileOrSource, findSessionFiles: () => findSessionFiles(defaultSessionsPath()) }
+      ? { root: defaultSessionsPath(), stateFile: stateFileOrSource, findSessionFiles: () => findSessionFiles(defaultSessionsPath()), maxFiles: 2000 }
       : stateFileOrSource;
     this.database = database ?? new SessionDatabase(path.dirname(this.source.stateFile));
   }
@@ -473,13 +478,16 @@ export class SessionIndex {
     try {
       if (root) {
         await fs.readdir(root);
-        files = await findSessionFiles(root);
+        files = await findSessionFiles(root, this.source.maxFiles);
       } else {
         files = await this.source.findSessionFiles();
       }
     } catch {
       warnings.push('Codex session folder is unavailable; showing previously indexed data.');
       return this.result(warnings, metrics, started);
+    }
+    if (files.length >= this.source.maxFiles) {
+      warnings.push('Session file scan limit (' + this.source.maxFiles + ') reached; additional files may not be indexed.');
     }
     const next = new Map(this.cache);
     for (const file of files) {
@@ -503,17 +511,12 @@ export class SessionIndex {
         metrics.eventsDeduplicated += imported.metrics.eventsDeduplicated;
         metrics.parseErrors += imported.metrics.parseErrors;
         warnings.push(...imported.warnings);
-        const candidate = new Map(next);
-        if (imported.archiveFile && prior) {
-          candidate.set(imported.archiveFile, { ...prior, events: prior.events.map((event) => ({ ...event, sourceFile: imported.archiveFile as string })) });
-        }
-        candidate.set(file, imported.file);
         this.commit(imported.update);
-        changed = true;
-        next.clear();
-        for (const [key, value] of candidate) {
-          next.set(key, value);
+        if (imported.archiveFile && prior) {
+          next.set(imported.archiveFile, { ...prior, events: prior.events.map((event) => ({ ...event, sourceFile: imported.archiveFile as string })) });
         }
+        next.set(file, imported.file);
+        changed = true;
       } catch (error) {
         warnings.push('Could not index session file ' + path.basename(file) + ': ' + this.safeError(error));
       }
@@ -643,6 +646,6 @@ export class SessionIndex {
 }
 
 export async function findSessionFiles(root: string, maxFiles = 2000): Promise<string[]> {
-  const source = new DefaultSessionSource(root, '');
-  return (await source.findSessionFiles()).slice(0, maxFiles).sort();
+  const source = new DefaultSessionSource(root, '', maxFiles);
+  return source.findSessionFiles();
 }
