@@ -19,6 +19,61 @@ function fixture(): { dir: string; root: string; file: string; state: string } {
 }
 
 describe('incremental JSONL indexing', () => {
+  it('discovers a second canonical conversation when a new rollout has a usage event', async () => {
+    const f = fixture();
+    const meta = (id: string) => JSON.stringify({ type: 'session_meta', payload: { id, thread_source: 'user' } });
+    const at = '2030-01-02T00:00:00Z';
+    try {
+      writeFileSync(f.file, meta('conversation-a') + '\n' + usage(100, at) + '\n');
+      const index = new SessionIndex(f.state);
+      try {
+        expect((await index.scan(f.root)).events.map(e => e.sessionId)).toEqual(['conversation-a']);
+        writeFileSync(path.join(f.root, 'second.jsonl'), meta('conversation-b') + '\n' + usage(50, at) + '\n');
+        const refreshed = await index.scan(f.root);
+        expect(refreshed.metrics.eventsNew).toBe(1);
+        expect(new Set(refreshed.events.map(e => e.sessionId))).toEqual(new Set(['conversation-a', 'conversation-b']));
+        expect(aggregate(refreshed.events).total.inputTokens).toBe(150);
+        expect((await index.scan(f.root)).metrics.eventsNew).toBe(0);
+      } finally { index.close(); }
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+  it('traces a canonical conversation with cached cumulative usage through refresh and restart', async () => {
+    const f = fixture();
+    const counter = (at: string, input: number, cached: number, output: number) => JSON.stringify({
+      timestamp: at, type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_output_tokens: 0 },
+        last_token_usage: { input_tokens: input === 58000 ? 18000 : input, cached_input_tokens: cached === 56800 ? 17800 : cached, output_tokens: output === 140 ? 40 : output },
+      } },
+    });
+    try {
+      const meta = JSON.stringify({ type: 'session_meta', payload: { id: 'canonical-conversation', thread_source: 'user' } });
+      const tool = JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call_output', id: 'ctco_tool', output: [] } });
+      writeFileSync(f.file, [meta, tool, counter('2030-01-01T00:00:00Z', 40000, 39000, 100)].join('\n') + '\n');
+      let index = new SessionIndex(f.state);
+      let scan = await index.scan(f.root);
+      expect(scan.events).toHaveLength(1);
+      expect(scan.events[0].sessionId).toBe('canonical-conversation');
+      appendFileSync(f.file, counter('2030-01-01T00:01:00Z', 58000, 56800, 140) + '\n');
+      scan = await index.scan(f.root);
+      expect(scan.events.map(e => [e.inputTokens, e.cachedInputTokens, e.outputTokens])).toEqual([[40000, 39000, 100], [18000, 17800, 40]]);
+      expect(new Set(scan.events.map(e => e.sessionId))).toEqual(new Set(['canonical-conversation']));
+      expect(aggregate(scan.events).sessions).toHaveLength(1);
+      expect((await index.scan(f.root)).metrics.eventsNew).toBe(0);
+      index.close();
+      index = new SessionIndex(f.state);
+      scan = await index.scan(f.root);
+      expect(scan.metrics.eventsNew).toBe(0);
+      expect(aggregate(scan.events).total).toMatchObject({ inputTokens: 58000, cachedInputTokens: 56800, outputTokens: 140 });
+      const partial = counter('2030-01-01T00:02:00Z', 59000, 57800, 150);
+      appendFileSync(f.file, partial);
+      expect((await index.scan(f.root)).events).toHaveLength(2);
+      appendFileSync(f.file, '\n');
+      scan = await index.scan(f.root);
+      expect(scan.events.map(e => e.inputTokens)).toEqual([40000, 18000, 1000]);
+      expect((await index.scan(f.root)).events).toHaveLength(3);
+      index.close();
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
   it('reads only appended bytes and does not duplicate cumulative counters', async () => {
     const f = fixture();
     try {
