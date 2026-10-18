@@ -32,7 +32,8 @@ describe('compiled React dashboard',()=>{
    const quota={state:'connected',plan:'plus',fetchedAt:'2026-10-15T12:00:00Z',ordinaryUsageAllowed:true,buckets:[]};
    dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'snapshot',analytics,quota,histories:[],storageMode:'sqlite'}}));await wait(80);
    const text=dom.window.document.body.textContent||'';
-   expect(text).toContain('Data quality: token history is not fully verified');
+   expect(text).toContain('Historical Data Integrity');
+   expect(text).toContain('No changes applied');
    expect(text).toContain('197,269,156');
   }finally{dom.window.close();}
  },5000);

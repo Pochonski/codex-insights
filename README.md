@@ -74,6 +74,7 @@ Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `
 | `src/collectors` | Local JSONL discovery and persistent session index. |
 | `src/storage` | SQLite migrations and tables for quota samples, projects, models, sessions, token events, and import state. |
 | `src/analytics` | Aggregations, historical series, and combined filters. |
+| `src/reconciliation` | Offline, read-only historical audit and evidence-linked repair proposals. |
 | `src/webview` | React dashboard, countdowns, styles, and Content Security Policy. |
 | `src/protocol/generated` | TypeScript contracts generated from Codex App Server. |
 
@@ -98,6 +99,8 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 `npm test` runs simulated JSON-RPC recovery, timeout, malformed protocol, SQLite migration and corruption, session-index, deduplication, filter, countdown, message-boundary, lifecycle, Status Bar formatting, SVG progress, and React rendering tests. These tests do not generate model usage. The isolated Electron suite verifies Status Bar updates, real Webview mounting, commands, and mini panel lifecycle with synthetic data. The native hover was visually inspected in VS Code 1.90 using synthetic fixtures in dark, light, and high contrast themes; real-account comparison remains a manual release check.
 
 The dashboard's **Usage groups** count is the number of distinct IDs attached to local token events, not a verified count of independent conversations. A `session_meta` record without usable token observations does not create a usage group. The table shows up to 250 groups, ordered by latest activity so a new low-token group is visible. Older indexes can contain response-item IDs such as `ctco_` because of a previous attribution error. The collector now keeps new usage with the verified `session_meta` identity, while preserving old token amounts for a separately reviewed repair. See the [session classification audit](docs/SESSION_CLASSIFICATION_AUDIT.md). Run `npm run audit:sessions` for anonymous, read-only local counts; it prints no paths, IDs, prompts, or responses.
+
+**Historical integrity review:** A separate offline auditor can classify stored token events and prepare a private, evidence-linked proposal from an isolated SQLite or JSON snapshot. It never applies changes; `--repair` and `--apply` are disabled. Use `node scripts/audit-history.mjs --help` and read [Historical reconciliation and safe dry-run](docs/HISTORICAL_RECONCILIATION_0.4.3.md) before using it. The dashboard marks unreconciled history and says **No changes applied**; its displayed totals are still the recorded values. Keep detailed plans outside the repository and do not share them publicly.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 
