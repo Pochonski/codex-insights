@@ -109,6 +109,21 @@ describe('cumulative usage lineage', () => {
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 
+  it('does not add a rewritten cumulative sequence when timestamps and item IDs change', async () => {
+    const f = env();
+    try {
+      writeFileSync(f.file('original'), line(meta('thread'), usage(100, '2026-01-01T00:00:00Z'), usage(150, '2026-01-01T00:01:00Z')));
+      const index = new SessionIndex(f.state);
+      expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(150);
+      writeFileSync(f.file('rewritten'), line(meta('thread'), JSON.stringify({ type: 'response_item', payload: { id: 'ctco_new' } }), usage(100, '2026-01-01T00:02:00Z'), usage(150, '2026-01-01T00:03:00Z')));
+      const scan = await index.scan(f.root);
+      expect(aggregate(scan.events).total.inputTokens).toBe(150);
+      appendFileSync(f.file('rewritten'), line(usage(170, '2026-01-01T00:04:00Z')));
+      expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(170);
+      index.close();
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
   it('uses last usage for the first independent fork event above an inherited parent base', async () => {
     const f = env();
     try {
@@ -178,6 +193,33 @@ describe('cumulative usage lineage', () => {
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 
+  it('produces equivalent accounting with SQLite and JSON fallback after restart and refresh', async () => {
+    const sqlite = await sqliteModule(); if (!sqlite) return;
+    const left = env(), right = env();
+    class UnavailableDatabase extends SessionDatabase { override async open() { return false; } }
+    try {
+      for (const f of [left, right]) {
+        writeFileSync(f.file('base'), line(meta('thread'), usage(100, '2026-01-01T00:00:00Z', 80), usage(150, '2026-01-01T00:01:00Z', 120)));
+      }
+      let sql = new SessionIndex(left.state);
+      let json = new SessionIndex(right.state, new UnavailableDatabase(right.dir));
+      await sql.scan(left.root); await json.scan(right.root);
+      sql.close(); json.close();
+      for (const f of [left, right]) {
+        writeFileSync(f.file('continuation'), line(meta('thread'), usage(150, '2026-01-01T00:02:00Z', 120), usage(170, '2026-01-01T00:03:00Z', 138)));
+      }
+      sql = new SessionIndex(left.state);
+      json = new SessionIndex(right.state, new UnavailableDatabase(right.dir));
+      const sqlFirst = await sql.scan(left.root);
+      const jsonFirst = await json.scan(right.root);
+      expect(aggregate(sqlFirst.events).total).toEqual(aggregate(jsonFirst.events).total);
+      expect(aggregate(sqlFirst.events).total.inputTokens).toBe(170);
+      expect(aggregate(sqlFirst.events).total.cachedInputTokens).toBe(138);
+      expect(aggregate((await sql.scan(left.root)).events).total).toEqual(aggregate((await json.scan(right.root)).events).total);
+      sql.close(); json.close();
+    } finally { rmSync(left.dir, { recursive: true, force: true }); rmSync(right.dir, { recursive: true, force: true }); }
+  });
+
   it('rolls back events and observations together if checkpoint storage fails', async () => {
     if (!await sqliteModule()) return;
     const f = env();
@@ -187,6 +229,9 @@ describe('cumulative usage lineage', () => {
       const timestamp = '2026-01-01T00:00:00.000Z';
       expect(() => db.applyIncremental({ file: 'synthetic.jsonl', checkpoint: { size: Number.NaN, mtimeMs: 1, offset: 1, identity: null, generation: null, parserState: null, partial: null, parserVersion: 2, lastReadAt: 1 }, events: [{ id: 'event', fingerprint: 'fingerprint', sourceFile: 'synthetic.jsonl', sessionId: 'thread', timestamp, inputTokens: 10, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 }], observations: [{ id: 'observation', key: 'key', sourceFile: 'synthetic.jsonl', sessionId: 'thread', timestamp, input: 10, output: 0, cached: 0, reasoning: 0, decision: 'counted' }] })).toThrow();
       expect(db.read().size).toBe(0);
+      db.applyIncremental({ file: 'synthetic.jsonl', checkpoint: { size: 10, mtimeMs: 1, offset: 10, identity: null, generation: null, parserState: null, partial: null, parserVersion: 2, lastReadAt: 1 }, events: [{ id: 'event', fingerprint: 'fingerprint', sourceFile: 'synthetic.jsonl', sessionId: 'thread', timestamp, inputTokens: 10, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 }], observations: [{ id: 'observation', key: 'key', sourceFile: 'synthetic.jsonl', sessionId: 'thread', timestamp, input: 10, output: 0, cached: 0, reasoning: 0, decision: 'counted' }] });
+      expect(db.read().get('synthetic.jsonl')?.events).toHaveLength(1);
+      expect(db.read().get('synthetic.jsonl')?.observations).toHaveLength(1);
       db.close();
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });

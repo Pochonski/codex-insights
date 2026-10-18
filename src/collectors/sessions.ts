@@ -31,17 +31,26 @@ function totalsKey(session: string, value: TokenTotals): string {
 class CounterLookup {
   private readonly keys = new Set<string>();
   private readonly totals = new Set<string>();
+  private readonly totalSources = new Map<string, Set<string>>();
   private readonly timed = new Set<string>();
   private readonly sessions = new Set<string>();
   constructor(items: CounterObservation[] = []) { for (const item of items) this.add(item); }
   add(item: CounterObservation): void {
     this.keys.add(item.key);
-    this.totals.add(totalsKey(item.sessionId, { input: item.input, output: item.output, cached: item.cached, reasoning: item.reasoning }));
+    const totalKey = totalsKey(item.sessionId, { input: item.input, output: item.output, cached: item.cached, reasoning: item.reasoning });
+    this.totals.add(totalKey);
+    let sources = this.totalSources.get(totalKey);
+    if (!sources) { sources = new Set<string>(); this.totalSources.set(totalKey, sources); }
+    sources.add(item.sourceFile);
     this.timed.add(JSON.stringify([item.sessionId, item.timestamp, item.input, item.output, item.cached, item.reasoning]));
     this.sessions.add(item.sessionId);
   }
   hasKey(key: string): boolean { return this.keys.has(key); }
   hasTotal(session: string, value: TokenTotals): boolean { return this.totals.has(totalsKey(session, value)); }
+  hasTotalInOtherSource(session: string, value: TokenTotals, sourceFile: string): boolean {
+    const sources = this.totalSources.get(totalsKey(session, value));
+    return !!sources && [...sources].some(source => source !== sourceFile);
+  }
   hasTotalAt(session: string, timestamp: string, value: TokenTotals): boolean { return this.timed.has(JSON.stringify([session, timestamp, value.input, value.output, value.cached, value.reasoning])); }
   hasSession(session: string): boolean { return this.sessions.has(session); }
 }
@@ -154,7 +163,9 @@ function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
   const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
   if (record.type !== 'event_msg' || payload.type !== 'token_count') return undefined;
   const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
-  const usage = record.total_token_usage ?? record.token_usage ?? record.usage ?? info.total_token_usage ?? payload.total_token_usage;
+  // A token_count event's typed cumulative field takes precedence. Generic
+  // `usage` objects have event-specific semantics and are not thread totals.
+  const usage = info.total_token_usage ?? payload.total_token_usage;
   if (!usage || typeof usage !== 'object') {
     return undefined;
   }
@@ -356,6 +367,14 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     if (duplicate) {
       decision = 'duplicate';
       delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+    } else if (state.lastTotals && known.hasTotalInOtherSource(currentSession, totals, sourceFile)) {
+      // A rewritten rollout can retain all cumulative values while changing
+      // timestamps and tool item IDs. Equal totals in another source with the
+      // same canonical identity are ambiguous, not fresh spend. Distinct fork
+      // identities remain independent and are still accounted separately.
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Ambiguous repeated cumulative observation in ' + path.basename(sourceFile) + '; no usage was inferred.');
     }
     const observation: CounterObservation = { id: stableEventId(sourceFile, lineOffset, record), key: observationKey, sourceFile, sessionId: currentSession, parentSessionId: state.parentSessionId, timestamp: new Date(timestamp).toISOString(), input: totals.input, output: totals.output, cached: totals.cached, reasoning: totals.reasoning, lastInput: last?.input, lastOutput: last?.output, lastCached: last?.cached, lastReasoning: last?.reasoning, decision };
     observations.push(observation);
