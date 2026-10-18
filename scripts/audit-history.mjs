@@ -62,6 +62,8 @@ try {
       eventsAnalyzed: number(plan.summary.eventsAnalyzed), observationsAnalyzed: number(plan.summary.observationsAnalyzed),
       sourceObservations: number(plan.summary.sourceObservations),
       classifications: { confirmed_duplicate: number(counts?.confirmed_duplicate), confirmed_unique: number(counts?.confirmed_unique), ambiguous: number(counts?.ambiguous), unverifiable_legacy: number(counts?.unverifiable_legacy) },
+      classificationScope: 'confirmed_unique is supported only within surviving evidence, not certified historical uniqueness',
+      candidateCounts: Object.fromEntries(['repeated_cumulative', 'possible_inherited_base', 'technical_id_attribution', 'archived_generation', 'rewritten_observation', 'missing_source'].map(key => [key, number(plan.summary.candidateCounts?.[key])])),
       current: vector(plan.summary.current), demonstrableAdjustment: vector(plan.summary.demonstrableAdjustment), proposed: vector(plan.summary.proposed),
       provenanceMatchedEvents: number(plan.summary.provenanceMatchedEvents),
       uncertainAdditionalAdjustment: 'not quantified', changesApplied: false,

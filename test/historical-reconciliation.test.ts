@@ -61,7 +61,7 @@ describe('historical reconciliation is conservative', () => {
     expect(p.summary.classifications.ambiguous).toBeGreaterThan(0);
   });
 
-  it('confirms an explicitly linked inherited parent baseline but retains independent fork increments', () => {
+  it('keeps matching parent and child baselines as candidates while retaining independent fork increments', () => {
     const parent = event('parent', v(150, 120, 15, 5), { sourceFile: '/synthetic/parent.jsonl', sessionId: 'parent' });
     const leftBase = event('left-base', v(150, 120, 15, 5), { sourceFile: '/synthetic/left.jsonl', sessionId: 'left' });
     const rightBase = event('right-base', v(150, 120, 15, 5), { sourceFile: '/synthetic/right.jsonl', sessionId: 'right' });
@@ -75,8 +75,9 @@ describe('historical reconciliation is conservative', () => {
       observation('right-new', v(180, 140, 18, 6), { sourceFile: rightBase.sourceFile, sessionId: 'right', timestamp: rightNew.timestamp, last: v(30, 20, 3, 1) }),
     ];
     const p = reconcileHistory(snapshot([parent, leftBase, rightBase, leftNew, rightNew]), evidence);
-    expect(p.adjustments.map(item => item.eventId)).toEqual(['left-base', 'right-base']);
-    expect(p.summary.proposed).toEqual(v(200, 158, 20, 7));
+    expect(p.adjustments).toEqual([]);
+    expect(p.summary.candidateCounts.possible_inherited_base).toBe(2);
+    expect(p.summary.proposed).toEqual(p.summary.current);
     expect(p.findings.find(item => item.eventId === 'left-new')?.classification).toBe('confirmed_unique');
     expect(p.findings.find(item => item.eventId === 'right-new')?.classification).toBe('confirmed_unique');
   });
