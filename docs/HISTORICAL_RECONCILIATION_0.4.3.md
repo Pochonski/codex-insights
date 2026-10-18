@@ -2,7 +2,7 @@
 
 ## Status and evidence boundary
 
-**Implemented:** a deterministic, read-only reconciler, isolated SQLite/JSON snapshot readers, an anonymous aggregate CLI, a private plan writer, and plan validation. **Not implemented or authorized:** applying a plan, historical data migration, automatic repair, or a repaired-history claim in the product. The package and VSIX version remain 0.4.2 during this review branch.
+**Implemented:** a deterministic, read-only reconciler, isolated SQLite/JSON snapshot readers, an anonymous aggregate CLI, a private plan writer, and plan validation. **Not implemented or authorized:** applying a plan, historical data migration, automatic repair, or a repaired-history claim in the product. The v0.4.3 preparation branch changes package metadata only; the audit never changes stored token totals.
 
 The published v0.4.2 collector prevents several future duplicate counts. Earlier versions could count a continuation's inherited cumulative base as new usage, misattribute `ctco_` response-item IDs as sessions, or retain overlapping archived generations. Prior private aggregate estimates are forensic leads, **not** approved corrections. A live database can change while Codex is active, so later snapshots need not reproduce earlier totals.
 
