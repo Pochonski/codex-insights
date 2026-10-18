@@ -8,6 +8,10 @@ import { reconcileHistory, validatePlan, type Counters, type SourceEvidence } fr
 
 const counters = (input: number): Counters => ({ input, cached: Math.floor(input * .8), output: Math.floor(input / 10), reasoning: Math.floor(input / 20) });
 const checkpoint: FileCheckpoint = { size: 10, mtimeMs: 1, offset: 10, identity: null, generation: null, parserState: null, partial: null, parserVersion: 2, lastReadAt: 1 };
+// node:sqlite is available in the VS Code/Node 22 runtime, not in the Node 20
+// compatibility lane. JSON snapshot tests in historical-reconciliation.test.ts
+// continue to run on both versions.
+const sqliteAvailable = Number(process.versions.node.split('.')[0]) >= 22;
 
 async function storedFixture(run: (db: SessionDatabase) => void) {
   const dir = mkdtempSync(path.join(tmpdir(), 'historical-coverage-'));
@@ -33,7 +37,7 @@ function evidenceFrom(snapshot: Awaited<ReturnType<typeof readSqliteSnapshot>>):
   return snapshot.observations.map(item => ({ ...item, eventFingerprint: fingerprints.get(item.id) }));
 }
 
-describe('historical coverage on storage-valid SQLite 6 snapshots', () => {
+describe.skipIf(!sqliteAvailable)('historical coverage on storage-valid SQLite 6 snapshots', () => {
   it('cannot store a second non-null exact fingerprint; the confirmation rule is only a fallback for inconsistent snapshots', async () => {
     const fixture = await storedFixture(db => {
       insert(db, 'a', 'first.jsonl', 'thread', 100, { fingerprint: 'identical' });
