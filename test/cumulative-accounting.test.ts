@@ -11,6 +11,7 @@ const usage = (input: number, at: string, cached = 0, last?: number) => JSON.str
 const line = (...rows: string[]) => rows.join('\n') + '\n';
 
 function env() { const dir = mkdtempSync(path.join(tmpdir(), 'codex-accounting-')); const root = path.join(dir, 'sessions'); mkdirSync(root); return { dir, root, state: path.join(dir, 'index.json'), file: (name: string) => path.join(root, name + '.jsonl') }; }
+async function sqliteModule(): Promise<typeof import('node:sqlite') | undefined> { try { return await import('node:sqlite'); } catch { return undefined; } }
 
 describe('cumulative usage lineage', () => {
   it('does not count a continuation baseline twice (170, not 320), including after restart', async () => {
@@ -35,9 +36,11 @@ describe('cumulative usage lineage', () => {
     try {
       writeFileSync(f.file('base'), line(meta('thread'), usage(100, '2026-01-01T00:00:00Z'), usage(150, '2026-01-01T00:01:00Z')));
       const initial = new SessionIndex(f.state); await initial.scan(f.root); initial.close();
-      const sqlite = await import('node:sqlite');
-      const raw = new sqlite.DatabaseSync(path.join(f.dir, 'insights.sqlite'));
-      raw.exec('DELETE FROM counter_observations'); raw.close();
+      const sqlite = await sqliteModule();
+      if (sqlite) {
+        const raw = new sqlite.DatabaseSync(path.join(f.dir, 'insights.sqlite'));
+        raw.exec('DELETE FROM counter_observations'); raw.close();
+      }
       const fs = await import('node:fs');
       const state = JSON.parse(fs.readFileSync(f.state, 'utf8')) as Array<{ observations?: unknown[] }>;
       for (const entry of state) delete entry.observations;
@@ -85,7 +88,9 @@ describe('cumulative usage lineage', () => {
       expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(200);
       index.close();
       const db = new SessionDatabase(f.dir); await db.open();
-      const decisions = [...db.read().values()].flatMap(item => (item.observations ?? []).map(observation => observation.decision));
+      const decisions = db.available
+        ? [...db.read().values()].flatMap(item => (item.observations ?? []).map(observation => observation.decision))
+        : (JSON.parse((await import('node:fs')).readFileSync(f.state, 'utf8')) as Array<{ observations?: Array<{ decision: string }> }>).flatMap(item => (item.observations ?? []).map(observation => observation.decision));
       expect(decisions).toContain('inherited');
       expect(decisions).toContain('ambiguous');
       db.close();
@@ -162,7 +167,8 @@ describe('cumulative usage lineage', () => {
       writeFileSync(f.file('base'), line(meta('thread'), usage(100, '2026-01-01T00:00:00Z')));
       let index = new SessionIndex(f.state); await index.scan(f.root); index.close();
       const db = new SessionDatabase(f.dir); await db.open();
-      expect([...db.read().values()].flatMap(item => item.observations ?? [])).toHaveLength(1);
+      if (db.available) expect([...db.read().values()].flatMap(item => item.observations ?? [])).toHaveLength(1);
+      else expect((JSON.parse((await import('node:fs')).readFileSync(f.state, 'utf8')) as Array<{ observations?: unknown[] }>).flatMap(item => item.observations ?? [])).toHaveLength(1);
       db.close();
       class UnavailableDatabase extends SessionDatabase { override async open() { return false; } }
       writeFileSync(f.file('next'), line(meta('thread'), usage(100, '2026-01-01T00:01:00Z'), usage(120, '2026-01-01T00:02:00Z')));
@@ -173,6 +179,7 @@ describe('cumulative usage lineage', () => {
   });
 
   it('rolls back events and observations together if checkpoint storage fails', async () => {
+    if (!await sqliteModule()) return;
     const f = env();
     try {
       const db = new SessionDatabase(f.dir);
