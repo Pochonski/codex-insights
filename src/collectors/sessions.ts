@@ -7,6 +7,7 @@ import { type UsageEvent } from '../core/types';
 import {
   SESSION_PARSER_VERSION,
   SessionDatabase,
+  type CounterObservation,
   type FileCheckpoint,
   type IncrementalFileUpdate,
   type IndexedFile,
@@ -23,10 +24,42 @@ interface TokenTotals {
   reasoning: number;
 }
 
+function totalsKey(session: string, value: TokenTotals): string {
+  return JSON.stringify([session, value.input, value.output, value.cached, value.reasoning]);
+}
+
+class CounterLookup {
+  private readonly keys = new Set<string>();
+  private readonly totals = new Set<string>();
+  private readonly totalSources = new Map<string, Set<string>>();
+  private readonly timed = new Set<string>();
+  private readonly sessions = new Set<string>();
+  constructor(items: CounterObservation[] = []) { for (const item of items) this.add(item); }
+  add(item: CounterObservation): void {
+    this.keys.add(item.key);
+    const totalKey = totalsKey(item.sessionId, { input: item.input, output: item.output, cached: item.cached, reasoning: item.reasoning });
+    this.totals.add(totalKey);
+    let sources = this.totalSources.get(totalKey);
+    if (!sources) { sources = new Set<string>(); this.totalSources.set(totalKey, sources); }
+    sources.add(item.sourceFile);
+    this.timed.add(JSON.stringify([item.sessionId, item.timestamp, item.input, item.output, item.cached, item.reasoning]));
+    this.sessions.add(item.sessionId);
+  }
+  hasKey(key: string): boolean { return this.keys.has(key); }
+  hasTotal(session: string, value: TokenTotals): boolean { return this.totals.has(totalsKey(session, value)); }
+  hasTotalInOtherSource(session: string, value: TokenTotals, sourceFile: string): boolean {
+    const sources = this.totalSources.get(totalsKey(session, value));
+    return !!sources && [...sources].some(source => source !== sourceFile);
+  }
+  hasTotalAt(session: string, timestamp: string, value: TokenTotals): boolean { return this.timed.has(JSON.stringify([session, timestamp, value.input, value.output, value.cached, value.reasoning])); }
+  hasSession(session: string): boolean { return this.sessions.has(session); }
+}
+
 interface ParserState {
   sessionId?: string;
   // Set only from session_meta. Response item payload.id identifies an item, not a session.
   canonicalSessionId?: string;
+  parentSessionId?: string;
   // Preserve the v0.4.1 fingerprint scheme so copied legacy records still deduplicate.
   fingerprintSessionId?: string;
   metadataChecked?: boolean;
@@ -55,6 +88,7 @@ export interface SessionScanResult {
 
 interface ParseResult {
   events: UsageEvent[];
+  observations: CounterObservation[];
   state: ParserState;
   confirmedBytes: number;
   partial: Buffer;
@@ -132,8 +166,11 @@ function timestampValue(value: unknown): number | undefined {
 
 function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
   const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+  if (record.type !== 'event_msg' || payload.type !== 'token_count') return undefined;
   const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
-  const usage = record.total_token_usage ?? record.token_usage ?? record.usage ?? info.total_token_usage ?? payload.total_token_usage;
+  // A token_count event's typed cumulative field takes precedence. Generic
+  // `usage` objects have event-specific semantics and are not thread totals.
+  const usage = info.total_token_usage ?? payload.total_token_usage;
   if (!usage || typeof usage !== 'object') {
     return undefined;
   }
@@ -146,6 +183,17 @@ function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
     return undefined;
   }
   return { input, output, cached, reasoning };
+}
+
+function lastUsageOf(record: Record<string, unknown>): TokenTotals | undefined {
+  const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
+  const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
+  const raw = info.last_token_usage;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const usage = raw as Record<string, unknown>;
+  const fields = [usage.input_tokens, usage.output_tokens, usage.cached_input_tokens, usage.reasoning_output_tokens];
+  if (fields.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) return undefined;
+  return { input: fields[0] as number, output: fields[1] as number, cached: fields[2] as number, reasoning: fields[3] as number };
 }
 
 function projectOf(record: Record<string, unknown>): string | undefined {
@@ -194,13 +242,15 @@ function fingerprint(record: Record<string, unknown>, sessionId: string): string
   return createHash('sha256').update(sessionId).update(':').update(JSON.stringify(record)).digest('hex');
 }
 
-function stableEventId(sourceFile: string, lineOffset: number): string {
-  return createHash('sha256').update(sourceFile).update(':').update(String(lineOffset)).digest('hex').slice(0, 24);
+function stableEventId(sourceFile: string, lineOffset: number, record: Record<string, unknown>): string {
+  return createHash('sha256').update(sourceFile).update(':').update(String(lineOffset)).update(':').update(JSON.stringify(record)).digest('hex').slice(0, 24);
 }
 
-function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number): ParseResult {
+function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number, known: CounterLookup = new CounterLookup()): ParseResult {
   const state: ParserState = { ...previous, lastTotals: previous.lastTotals ? { ...previous.lastTotals } : undefined };
   const events: UsageEvent[] = [];
+  const observations: CounterObservation[] = [];
+  const local = new CounterLookup();
   const warnings: string[] = [];
   let cursor = 0;
   let confirmedBytes = 0;
@@ -241,6 +291,8 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
         state.canonicalSessionId = candidateSession;
         state.sessionId = candidateSession;
       }
+      const parent = payload.forked_from_id ?? payload.parent_thread_id;
+      if (typeof parent === 'string' && parent.trim()) state.parentSessionId = parent;
     }
     state.project = projectOf(record) ?? state.project;
     state.model = modelOf(record) ?? state.model;
@@ -253,8 +305,17 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
         .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
       if (explicitSession) state.sessionId = explicitSession;
     }
-    const timestamp = timestampValue(record.timestamp ?? record.created_at ?? record.time) ?? Date.now();
+    const sourceTimestamp = timestampValue(record.timestamp ?? record.created_at ?? record.time);
+    const timestamp = sourceTimestamp ?? Date.now();
     const currentSession = state.canonicalSessionId ?? state.sessionId ?? createHash('sha256').update(sourceFile).digest('hex').slice(0, 16);
+    const last = lastUsageOf(record);
+    const observationKey = createHash('sha256').update(JSON.stringify([currentSession, sourceTimestamp ?? `${sourceFile}:${lineOffset}`, totals, last])).digest('hex');
+    const duplicate = known.hasKey(observationKey) || local.hasKey(observationKey);
+    const sameCounter = known.hasTotal(currentSession, totals) || local.hasTotal(currentSession, totals);
+    const inheritedFromParent = !!state.parentSessionId && (known.hasTotal(state.parentSessionId, totals) || local.hasTotal(state.parentSessionId, totals));
+    const copiedParentObservation = !!state.parentSessionId && (known.hasTotalAt(state.parentSessionId, new Date(timestamp).toISOString(), totals) || local.hasTotalAt(state.parentSessionId, new Date(timestamp).toISOString(), totals));
+    const existingThread = known.hasSession(currentSession) || local.hasSession(currentSession);
+    let decision: CounterObservation['decision'] = 'counted';
     let delta = totals;
     if (state.lastTotals) {
       if (state.lastTimestamp !== undefined && timestamp < state.lastTimestamp) {
@@ -267,21 +328,69 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
         continue;
       }
       delta = decreased
-        ? totals
+        ? last ?? totals
         : {
             input: totals.input - state.lastTotals.input,
             output: totals.output - state.lastTotals.output,
             cached: totals.cached - state.lastTotals.cached,
             reasoning: totals.reasoning - state.lastTotals.reasoning,
           };
+    } else if (inheritedFromParent) {
+      decision = copiedParentObservation ? 'inherited' : 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      if (!copiedParentObservation) warnings.push('Ambiguous fork baseline in ' + path.basename(sourceFile) + '; parent counters match but the observation time differs.');
+    } else if (sameCounter || (existingThread && !last)) {
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Ambiguous inherited cumulative baseline in ' + path.basename(sourceFile) + '; no usage was inferred.');
+    } else if ((existingThread || state.parentSessionId) && last) {
+      if (last.input <= totals.input && last.output <= totals.output && last.cached <= totals.cached && last.reasoning <= totals.reasoning) {
+        delta = last;
+        const predecessor = { input: totals.input - last.input, output: totals.output - last.output, cached: totals.cached - last.cached, reasoning: totals.reasoning - last.reasoning };
+        if (!known.hasTotal(currentSession, predecessor) && !local.hasTotal(currentSession, predecessor) &&
+          !(state.parentSessionId && (known.hasTotal(state.parentSessionId, predecessor) || local.hasTotal(state.parentSessionId, predecessor)))) {
+          decision = 'ambiguous';
+          warnings.push('Unverified gap before first usage in ' + path.basename(sourceFile) + '; only last usage was counted.');
+        }
+      } else {
+        decision = 'ambiguous';
+        delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+        warnings.push('Invalid last-usage counters in ' + path.basename(sourceFile) + '; no usage was inferred.');
+      }
+    } else if (state.parentSessionId) {
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Ambiguous fork baseline in ' + path.basename(sourceFile) + '; no usage was inferred.');
+    } else if (!existingThread && last &&
+      (last.input < totals.input || last.output < totals.output || last.cached < totals.cached || last.reasoning < totals.reasoning)) {
+      // No prior source is available. Only the last call is demonstrably new;
+      // the remainder of the cumulative baseline may have been inherited.
+      decision = 'ambiguous';
+      delta = last;
+      warnings.push('Unverified initial cumulative baseline in ' + path.basename(sourceFile) + '; only last usage was counted.');
     }
+    if (duplicate) {
+      decision = 'duplicate';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+    } else if (state.lastTotals && known.hasTotalInOtherSource(currentSession, totals, sourceFile)) {
+      // A rewritten rollout can retain all cumulative values while changing
+      // timestamps and tool item IDs. Equal totals in another source with the
+      // same canonical identity are ambiguous, not fresh spend. Distinct fork
+      // identities remain independent and are still accounted separately.
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Ambiguous repeated cumulative observation in ' + path.basename(sourceFile) + '; no usage was inferred.');
+    }
+    const observation: CounterObservation = { id: stableEventId(sourceFile, lineOffset, record), key: observationKey, sourceFile, sessionId: currentSession, parentSessionId: state.parentSessionId, timestamp: new Date(timestamp).toISOString(), input: totals.input, output: totals.output, cached: totals.cached, reasoning: totals.reasoning, lastInput: last?.input, lastOutput: last?.output, lastCached: last?.cached, lastReasoning: last?.reasoning, decision };
+    observations.push(observation);
+    local.add(observation);
     state.lastTotals = totals;
     state.lastTimestamp = timestamp;
     if (delta.input === 0 && delta.output === 0 && delta.cached === 0 && delta.reasoning === 0) {
       continue;
     }
     events.push({
-      id: stableEventId(sourceFile, lineOffset),
+      id: stableEventId(sourceFile, lineOffset, record),
       sessionId: currentSession,
       sourceFile,
       timestamp: new Date(timestamp).toISOString(),
@@ -294,7 +403,7 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
       fingerprint: fingerprint(record, state.fingerprintSessionId ?? currentSession),
     });
   }
-  return { events, state, confirmedBytes, partial: content.subarray(confirmedBytes), warnings };
+  return { events, observations, state, confirmedBytes, partial: content.subarray(confirmedBytes), warnings };
 }
 
 export function parseSessionDetailed(content: string, sourceFile: string): { events: UsageEvent[]; warnings: string[] } {
@@ -346,6 +455,34 @@ async function readSessionMetadata(filePath: string, size: number): Promise<{ id
   return { bytesRead: data.length };
 }
 
+interface FirstUsageResult { timestamp: number; bytesRead: number; data?: Buffer; offset: number; size: number; mtimeMs: number; identity?: string }
+
+async function firstUsageTime(filePath: string, offset = 0): Promise<FirstUsageResult> {
+  const stat = await fs.stat(filePath);
+  const identity = identityOf(stat);
+  if (stat.size > MAX_FILE_BYTES) return { timestamp: Number.MAX_SAFE_INTEGER, bytesRead: 0, offset, size: stat.size, mtimeMs: stat.mtimeMs, identity };
+  let bytesRead = 0;
+  for (const limit of [4096, 64 * 1024, MAX_FILE_BYTES]) {
+    const data = await readRange(filePath, offset, Math.min(Math.max(0, stat.size - offset), limit));
+    bytesRead += data.length;
+    let cursor = 0;
+    while (cursor < data.length) {
+      const newline = data.indexOf(0x0a, cursor);
+      if (newline < 0) break;
+      try {
+        const record = JSON.parse(data.subarray(cursor, newline).toString('utf8')) as Record<string, unknown>;
+        const payload = record.payload as Record<string, unknown> | undefined;
+        if (record.type === 'event_msg' && payload?.type === 'token_count') {
+          return { timestamp: timestampValue(record.timestamp) ?? stat.birthtimeMs, bytesRead, data, offset, size: stat.size, mtimeMs: stat.mtimeMs, identity };
+        }
+      } catch { /* A malformed line cannot order this file. */ }
+      cursor = newline + 1;
+    }
+    if (data.length === stat.size - offset) break;
+  }
+  return { timestamp: stat.birthtimeMs, bytesRead, offset, size: stat.size, mtimeMs: stat.mtimeMs, identity };
+}
+
 function identityOf(stat: import('node:fs').Stats): string | undefined {
   if (typeof stat.dev === 'number' && typeof stat.ino === 'number' && stat.dev !== 0 && stat.ino !== 0) {
     return String(stat.dev) + ':' + String(stat.ino);
@@ -369,6 +506,7 @@ function indexedFile(value: Partial<IndexedFile> & Pick<IndexedFile, 'size' | 'm
     parserVersion: value.parserVersion ?? 1,
     lastReadAt: value.lastReadAt ?? null,
     events: value.events,
+    observations: value.observations ?? [],
   };
 }
 
@@ -397,6 +535,8 @@ export class SessionIndex {
   private scanning?: Promise<SessionScanResult>;
   private fallbackWritable = true;
   private readonly loadWarnings: string[] = [];
+  private legacyCounters?: CounterObservation[];
+  private qualitySummary?: { legacyUnverified: number; ambiguous: number };
   private readonly database: SessionDatabase;
 
   private readonly source: SessionSource;
@@ -490,6 +630,47 @@ export class SessionIndex {
       warnings.push('Session file scan limit (' + this.source.maxFiles + ') reached; additional files may not be indexed.');
     }
     const next = new Map(this.cache);
+    if (!this.legacyCounters) {
+      this.legacyCounters = [];
+      for (const [file, entry] of next) {
+        if ((entry.observations?.length ?? 0) > 0) continue;
+        const state = decodeState(entry.parserState);
+        if (!state.lastTotals) continue;
+        let id = state.canonicalSessionId;
+        if (!id) {
+          try { id = (await readSessionMetadata(file, entry.size)).id; } catch { /* Archived bytes are unavailable. */ }
+        }
+        if (!id) continue;
+        this.legacyCounters.push({ id: 'legacy:' + file, key: 'legacy:' + file, sourceFile: file, sessionId: id, timestamp: new Date(state.lastTimestamp ?? 0).toISOString(), input: state.lastTotals.input, output: state.lastTotals.output, cached: state.lastTotals.cached, reasoning: state.lastTotals.reasoning, decision: 'ambiguous' });
+      }
+    }
+    const known = new CounterLookup([...this.legacyCounters, ...[...next.values()].flatMap((entry) => entry.observations ?? [])]);
+    // Establish a deterministic chronology for changed files. The
+    // inherited first counter must not become the starting point only because
+    // a continuation filename sorts before its parent.
+    const newTimes = new Map<string, number>();
+    const prefetched = new Map<string, FirstUsageResult>();
+    const changedFiles: string[] = [];
+    for (const file of files) {
+      try {
+        const stat = await fs.stat(file);
+        const prior = next.get(file);
+        if (prior && stat.size === prior.size && stat.mtimeMs === prior.mtimeMs && (!prior.identity || !identityOf(stat) || prior.identity === identityOf(stat))) continue;
+        changedFiles.push(file);
+      } catch { /* The import loop reports the file error. */ }
+    }
+    for (const file of changedFiles.length > 1 ? changedFiles : []) {
+      try {
+        const stat = await fs.stat(file);
+        const prior = next.get(file);
+        const offset = prior && stat.size >= prior.offset && (!prior.identity || !identityOf(stat) || prior.identity === identityOf(stat)) ? prior.offset : 0;
+        const first = await firstUsageTime(file, offset);
+        newTimes.set(file, first.timestamp);
+        prefetched.set(file, first);
+        metrics.bytesRead += first.bytesRead;
+      } catch { newTimes.set(file, Number.MAX_SAFE_INTEGER); }
+    }
+    files.sort((left, right) => (newTimes.get(left) ?? Number.MAX_SAFE_INTEGER) - (newTimes.get(right) ?? Number.MAX_SAFE_INTEGER) || left.localeCompare(right));
     for (const file of files) {
       metrics.filesInspected += 1;
       try {
@@ -501,7 +682,7 @@ export class SessionIndex {
           continue;
         }
         const prior = this.cache.get(file);
-        const imported = await this.importFile(file, stat, prior);
+        const imported = await this.importFile(file, stat, prior, known, prefetched.get(file));
         if (!imported) {
           continue;
         }
@@ -511,12 +692,18 @@ export class SessionIndex {
         metrics.eventsDeduplicated += imported.metrics.eventsDeduplicated;
         metrics.parseErrors += imported.metrics.parseErrors;
         warnings.push(...imported.warnings);
-        this.commit(imported.update);
+        const candidate = new Map(next);
         if (imported.archiveFile && prior) {
-          next.set(imported.archiveFile, { ...prior, events: prior.events.map((event) => ({ ...event, sourceFile: imported.archiveFile as string })) });
+          candidate.set(imported.archiveFile, { ...prior, events: prior.events.map((event) => ({ ...event, sourceFile: imported.archiveFile as string })), observations: (prior.observations ?? []).map((item) => ({ ...item, sourceFile: imported.archiveFile as string })) });
         }
-        next.set(file, imported.file);
+        candidate.set(file, imported.file);
+        this.commit(imported.update);
+        for (const observation of imported.update.observations ?? []) known.add(observation);
         changed = true;
+        next.clear();
+        for (const [key, value] of candidate) {
+          next.set(key, value);
+        }
       } catch (error) {
         warnings.push('Could not index session file ' + path.basename(file) + ': ' + this.safeError(error));
       }
@@ -525,10 +712,11 @@ export class SessionIndex {
       this.persistFallback(next);
     }
     this.cache = next;
+    if (changed) this.qualitySummary = undefined;
     return this.result(warnings, metrics, started);
   }
 
-  private async importFile(file: string, stat: import('node:fs').Stats, prior: IndexedFile | undefined): Promise<FileImportResult | undefined> {
+  private async importFile(file: string, stat: import('node:fs').Stats, prior: IndexedFile | undefined, known: CounterLookup, prefetch?: FirstUsageResult): Promise<FileImportResult | undefined> {
     const identity = identityOf(stat);
     let reconcile = !prior || prior.parserVersion !== SESSION_PARSER_VERSION || stat.size < prior.offset;
     if (prior && identity && prior.identity && identity !== prior.identity) {
@@ -563,15 +751,21 @@ export class SessionIndex {
         identityWarnings.push('Could not verify legacy session identity in ' + path.basename(file) + '; existing grouping was retained.');
       }
     }
-    const data = await readRange(file, start, stat.size - start);
+    const reused = prefetch?.data && prefetch.offset === start && prefetch.size === stat.size && prefetch.mtimeMs === stat.mtimeMs && prefetch.identity === identity && prefetch.data.length === stat.size - start;
+    const data = reused ? prefetch.data as Buffer : await readRange(file, start, stat.size - start);
     const generationData = !identity && !reconcile ? await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES)) : data;
-    const parser = parseSessionBuffer(data, file, previousState, start);
+    const afterRead = await fs.stat(file);
+    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs || identityOf(afterRead) !== identity) {
+      throw new Error('File changed during import; checkpoint was not advanced.');
+    }
+    const parser = parseSessionBuffer(data, file, previousState, start, known);
     const offset = start + parser.confirmedBytes;
     const sourceEvents = reconcile ? prior?.events ?? [] : prior?.events ?? [];
     const existingFingerprints = new Set(sourceEvents.map((event) => event.fingerprint));
     const accepted = parser.events.filter((event) => !existingFingerprints.has(event.fingerprint));
     const deduplicated = parser.events.length - accepted.length;
     const events = reconcile ? accepted : [...sourceEvents, ...accepted];
+    const observations = reconcile ? parser.observations : [...(prior?.observations ?? []), ...parser.observations];
     const nextFile = indexedFile({
       size: stat.size,
       mtimeMs: stat.mtimeMs,
@@ -583,18 +777,19 @@ export class SessionIndex {
       parserVersion: SESSION_PARSER_VERSION,
       lastReadAt: Date.now(),
       events,
+      observations,
     });
-    const archiveFile = reconcile && prior && prior.events.some((oldEvent) => !events.some((event) => event.fingerprint === oldEvent.fingerprint))
-      ? file + '#archived:' + (prior.generation ?? String(prior.mtimeMs))
+    const archiveFile = reconcile && prior && (prior.events.some((oldEvent) => !events.some((event) => event.fingerprint === oldEvent.fingerprint)) || (prior.observations ?? []).some((old) => !observations.some((item) => item.id === old.id)))
+      ? file + '#archived:' + createHash('sha256').update(JSON.stringify([prior.generation, prior.identity, prior.size, prior.mtimeMs, prior.offset])).digest('hex').slice(0, 20)
       : undefined;
-    const update: IncrementalFileUpdate = { file, checkpoint: checkpoint(nextFile), events: accepted, archiveFile };
+    const update: IncrementalFileUpdate = { file, checkpoint: checkpoint(nextFile), events: accepted, observations: parser.observations, archiveFile };
     return {
       file: nextFile,
       update,
       archiveFile,
       warnings: [...identityWarnings, ...parser.warnings],
       metrics: {
-        bytesRead: data.length + (generationData === data ? 0 : generationData.length) + metadataBytesRead,
+        bytesRead: (reused ? 0 : data.length) + (generationData === data ? 0 : generationData.length) + metadataBytesRead,
         eventsNew: accepted.length,
         eventsDeduplicated: deduplicated,
         parseErrors: parser.warnings.filter((warning) => warning.includes('invalid JSONL')).length,
@@ -623,11 +818,23 @@ export class SessionIndex {
   private result(warnings: string[], metrics: ScanMetrics, started: number): SessionScanResult {
     metrics.durationMs = performance.now() - started;
     const events: UsageEvent[] = [];
+    if (!this.qualitySummary) {
+      let legacyUnverified = 0;
+      let ambiguous = 0;
+      for (const entry of this.cache.values()) {
+        const observed = new Set((entry.observations ?? []).map((item) => item.id));
+        ambiguous += (entry.observations ?? []).filter((item) => item.decision === 'ambiguous').length;
+        for (const event of entry.events) if (!observed.has(event.id)) legacyUnverified += 1;
+      }
+      this.qualitySummary = { legacyUnverified, ambiguous };
+    }
     for (const entry of this.cache.values()) {
       for (const event of entry.events) {
         events.push(event);
       }
     }
+    if (this.qualitySummary.legacyUnverified > 0) warnings.push('Legacy token history has not been reconciled; totals may include inherited cumulative counters.');
+    if (this.qualitySummary.ambiguous > 0) warnings.push('Some cumulative token observations remain ambiguous; shown totals are conservative.');
     return { filesScanned: metrics.filesInspected, events: events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)), warnings: [...new Set(warnings)], metrics };
   }
 

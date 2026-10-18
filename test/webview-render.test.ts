@@ -24,4 +24,16 @@ describe('compiled React dashboard',()=>{
    expect(dom.window.document.body.textContent||'').toContain('Local session scan failed; showing the last successful data.');
   }finally{dom.window.close();}
  },5000);
+ it('shows a historical data-quality warning without changing displayed totals',async()=>{
+  const dom=new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>',{url:'https://example.invalid',runScripts:'outside-only',pretendToBeVisual:true});
+  (dom.window as unknown as {acquireVsCodeApi:()=>unknown}).acquireVsCodeApi=()=>({getState:()=>({}),setState:()=>{},postMessage:()=>{}});
+  try{dom.window.eval(bundle);await wait(50);
+   const analytics={options:{sessions:[],models:[],projects:[]},total:{inputTokens:197269156,outputTokens:10,cachedInputTokens:190000000,reasoningOutputTokens:2},eventCount:1,sessionCount:1,timeSeries:[],models:[],projects:[],sessionRows:[],scannedAt:'2026-10-15T12:00:00Z',filesScanned:1,warnings:['Legacy token history may contain inherited counters.']};
+   const quota={state:'connected',plan:'plus',fetchedAt:'2026-10-15T12:00:00Z',ordinaryUsageAllowed:true,buckets:[]};
+   dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'snapshot',analytics,quota,histories:[],storageMode:'sqlite'}}));await wait(80);
+   const text=dom.window.document.body.textContent||'';
+   expect(text).toContain('Data quality: token history is not fully verified');
+   expect(text).toContain('197,269,156');
+  }finally{dom.window.close();}
+ },5000);
 });

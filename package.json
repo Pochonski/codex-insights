@@ -98,6 +98,7 @@
     "package": "npm run build && vsce package --no-dependencies",
     "benchmark": "node scripts/benchmark.mjs",
     "audit:sessions": "node scripts/audit-sessions.mjs",
+    "audit:tokens": "node scripts/reconcile-tokens.mjs",
     "screenshot:demo": "npm run build:webview && node scripts/render-dashboard-demo.mjs",
     "scan:package": "node scripts/check-sensitive-files.mjs",
     "smoke:app-server": "node scripts/smoke-app-server.mjs",
