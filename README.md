@@ -1,5 +1,7 @@
 # Codex Insights
 
+Token observations from earlier versions may include inherited cumulative counters. New imports retain [counter provenance and an explicit reconciliation status](docs/TOKEN_ACCOUNTING_CORRECTION.md); existing history is preserved until a reviewed repair is available.
+
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
 Version **0.4.0** adds byte-offset JSONL indexing, transactional source checkpoints, partial-line recovery, custom date ranges, and optional local import diagnostics. The interface is built with React 19.

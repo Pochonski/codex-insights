@@ -32,6 +32,7 @@ describe('Codex token collector',()=>{
   expect(events).toHaveLength(2);expect(aggregate(events).total.inputTokens).toBe(150);expect(aggregate(events).total.outputTokens).toBe(75);
  });
  it('ignores malformed and unrelated records',()=>{expect(parseSession('invalid\n{"type":"other"}','test.jsonl')).toEqual([]);});
+ it('does not treat a turn-completed usage payload as another token_count observation',()=>{const content=JSON.stringify({type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:100}}}})+'\n'+JSON.stringify({type:'turn.completed',usage:{input_tokens:100}});expect(aggregate(parseSession(content,'typed.jsonl')).total.inputTokens).toBe(100);});
  it('accepts a chronological counter reset without negative increments',()=>{
   const record=(at:string,n:number)=>JSON.stringify({timestamp:at,type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
   const events=parseSession([record('2026-10-15T10:00:00Z',100),record('2026-10-15T10:01:00Z',140),record('2026-10-15T10:02:00Z',20)].join('\n'),'reset.jsonl');

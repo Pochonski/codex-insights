@@ -103,8 +103,13 @@ describe('incremental JSONL indexing', () => {
       const inspected = new sqlite.DatabaseSync(databasePath);
       expect(inspected.prepare('SELECT COUNT(*) AS count FROM token_events').get()).toMatchObject({ count: 1 });
       expect(inspected.prepare('SELECT version FROM schema_migrations WHERE version=5').get()).toMatchObject({ version: 5 });
+      expect(inspected.prepare('SELECT version FROM schema_migrations WHERE version=6').get()).toMatchObject({ version: 6 });
       expect(inspected.prepare('SELECT offset FROM import_state WHERE source_file=?').get('legacy.jsonl')).toMatchObject({ offset: 100 });
       inspected.close();
+      const reopened = new SessionDatabase(f.dir);
+      await reopened.open();
+      expect(aggregate([...reopened.read().values()].flatMap(entry => entry.events)).total.inputTokens).toBe(100);
+      reopened.close();
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 
@@ -115,7 +120,7 @@ describe('incremental JSONL indexing', () => {
       const index = new SessionIndex(f.state);
       await index.scan(f.root);
       renameSync(f.file, f.file + '.rotated');
-      writeFileSync(f.file, usage(20, '2026-10-15T01:00:00Z') + '\n');
+      writeFileSync(f.file, JSON.stringify({ type: 'session_meta', payload: { id: 'new-thread' } }) + '\n' + usage(20, '2026-10-15T01:00:00Z') + '\n');
       const scan = await index.scan(f.root);
       expect(aggregate(scan.events).total.inputTokens).toBe(120);
       index.close();
