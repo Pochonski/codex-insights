@@ -14,4 +14,26 @@ describe('compiled React dashboard',()=>{
    const text=dom.window.document.body.textContent||'';expect(text).toContain('5-hour limit');expect(text).toContain('7-day limit');expect(text).toContain('Tokens');expect(text).toContain('Projects');expect(text).toContain('100');expect(text).toContain('Usage groups');expect(text).toContain('Distinct recorded IDs; not conversation count');
   }finally{dom.window.close();}
  },5000);
+ it('renders an explicit notice when the local scan failed',async()=>{
+  const dom=new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>',{url:'https://example.invalid',runScripts:'outside-only',pretendToBeVisual:true});
+  const messages:unknown[]=[];(dom.window as unknown as {acquireVsCodeApi:()=>unknown}).acquireVsCodeApi=()=>({getState:()=>({}),setState:()=>{},postMessage:(value:unknown)=>messages.push(value)});
+  try{dom.window.eval(bundle);await wait(50);
+   const analytics={options:{sessions:[],models:[],projects:[]},total:{inputTokens:10,outputTokens:1,cachedInputTokens:5,reasoningOutputTokens:0},eventCount:1,sessionCount:1,timeSeries:[],models:[],projects:[],sessionRows:[],scannedAt:'2026-10-15T12:00:00Z',filesScanned:1,warnings:[],scanNotice:'Local session scan failed; showing the last successful data.'};
+   const quota={state:'connected',plan:'plus',fetchedAt:'2026-10-15T12:00:00Z',ordinaryUsageAllowed:true,buckets:[]};
+   dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'snapshot',analytics,quota,histories:[],storageMode:'json'}}));await wait(80);
+   expect(dom.window.document.body.textContent||'').toContain('Local session scan failed; showing the last successful data.');
+  }finally{dom.window.close();}
+ },5000);
+ it('shows a historical data-quality warning without changing displayed totals',async()=>{
+  const dom=new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>',{url:'https://example.invalid',runScripts:'outside-only',pretendToBeVisual:true});
+  (dom.window as unknown as {acquireVsCodeApi:()=>unknown}).acquireVsCodeApi=()=>({getState:()=>({}),setState:()=>{},postMessage:()=>{}});
+  try{dom.window.eval(bundle);await wait(50);
+   const analytics={options:{sessions:[],models:[],projects:[]},total:{inputTokens:197269156,outputTokens:10,cachedInputTokens:190000000,reasoningOutputTokens:2},eventCount:1,sessionCount:1,timeSeries:[],models:[],projects:[],sessionRows:[],scannedAt:'2026-10-15T12:00:00Z',filesScanned:1,warnings:['Legacy token history may contain inherited counters.']};
+   const quota={state:'connected',plan:'plus',fetchedAt:'2026-10-15T12:00:00Z',ordinaryUsageAllowed:true,buckets:[]};
+   dom.window.dispatchEvent(new dom.window.MessageEvent('message',{data:{type:'snapshot',analytics,quota,histories:[],storageMode:'sqlite'}}));await wait(80);
+   const text=dom.window.document.body.textContent||'';
+   expect(text).toContain('Data quality: token history is not fully verified');
+   expect(text).toContain('197,269,156');
+  }finally{dom.window.close();}
+ },5000);
 });

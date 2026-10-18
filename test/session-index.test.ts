@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {mkdtempSync,writeFileSync,rmSync,readFileSync,statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {SessionIndex} from '../src/collectors/sessions';
+import {SessionIndex,DefaultSessionSource,findSessionFiles} from '../src/collectors/sessions';
 import {aggregate} from '../src/analytics/aggregate';
 const record=(n:number)=>JSON.stringify({timestamp:'2026-10-15T00:00:00Z',type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
 describe('persistent session index',()=>{
@@ -26,6 +26,25 @@ describe('persistent session index',()=>{
 });
 describe('unavailable sessions directory',()=>{
  it('keeps previously indexed events when the root disappears',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-index-offline-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);writeFileSync(path.join(root,'session.jsonl'),record(10)+'\n');const index=new SessionIndex(path.join(dir,'index.json'));expect((await index.scan(root)).events).toHaveLength(1);await fs.rename(root,root+'-offline');const stale=await index.scan(root);expect(stale.events).toHaveLength(1);expect(stale.warnings[0]).toContain('unavailable');}finally{rmSync(dir,{recursive:true,force:true});}});
+});
+describe('session file discovery limit',()=>{
+ it('caps discovery deterministically at the newest files and warns when the scan limit is reached',async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),'codex-cap-'));
+  try{
+   const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);
+   for(const name of ['a.jsonl','b.jsonl','c.jsonl','d.jsonl','e.jsonl'])writeFileSync(path.join(root,name),record(10)+'\n');
+   const discovery=await findSessionFiles(root,3);
+   expect(discovery).toEqual([path.join(root,'c.jsonl'),path.join(root,'d.jsonl'),path.join(root,'e.jsonl')]);
+   const index=new SessionIndex(new DefaultSessionSource(root,path.join(dir,'state.json'),3));
+   try{
+    const scan=await index.scan(root);
+    expect(scan.filesScanned).toBe(3);
+    expect(scan.events).toHaveLength(3);
+    expect(scan.warnings.join(' ')).toContain('scan limit');
+    expect(scan.warnings.join(' ')).toContain('may not be indexed');
+   }finally{index.close();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+ });
 });
 describe('SQLite session entities',()=>{
  it('persists normalized events and restores the index if JSON fallback is missing',async()=>{

@@ -5,6 +5,7 @@ out/
 coverage/
 .vscode-test/
 media/dashboard.js
+media/mini-panel.js
 *.vsix
 *.zip
 *.tar
