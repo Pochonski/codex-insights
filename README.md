@@ -4,7 +4,7 @@ Token observations from earlier versions may include inherited cumulative counte
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.4.2** adds an automatic native Status Bar hover with visual quota bars. The full React analytics dashboard remains available; the editor-based mini panel is an optional command.
+Version **0.4.3** prepares a read-only historical token audit, overlap candidates, and verifiable private review plans. It does **not** repair stored history or certify old totals. The native Status Bar hover introduced in v0.4.2, full React dashboard, and optional mini panel remain available.
 
 ## Features
 
@@ -61,7 +61,7 @@ npm run package
 npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundles to `media/dashboard.js` and `media/mini-panel.js`. `package` creates `codex-insights-0.4.2.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds all three bundles. `npm run screenshot:mini` renders synthetic mini panel screenshots from the real bundle using local Chromium. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundles to `media/dashboard.js` and `media/mini-panel.js`. `package` creates `codex-insights-0.4.3.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds all three bundles. `npm run screenshot:mini` renders synthetic mini panel screenshots from the real bundle using local Chromium. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
 
 Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `xvfb-run -a npm run test:e2e`. The suite downloads VS Code 1.90.0 on first run, uses synthetic data, and does not use Codex credentials or App Server. See [the E2E guide](docs/E2E_TESTING_0.4.1.md).
 
@@ -100,7 +100,9 @@ All history is stored under VS Code's extension `globalStorageUri`, outside the 
 
 The dashboard's **Usage groups** count is the number of distinct IDs attached to local token events, not a verified count of independent conversations. A `session_meta` record without usable token observations does not create a usage group. The table shows up to 250 groups, ordered by latest activity so a new low-token group is visible. Older indexes can contain response-item IDs such as `ctco_` because of a previous attribution error. The collector now keeps new usage with the verified `session_meta` identity, while preserving old token amounts for a separately reviewed repair. See the [session classification audit](docs/SESSION_CLASSIFICATION_AUDIT.md). Run `npm run audit:sessions` for anonymous, read-only local counts; it prints no paths, IDs, prompts, or responses.
 
-**Historical integrity review:** A separate offline auditor can classify stored token events and prepare a private, evidence-linked proposal from an isolated SQLite or JSON snapshot. It never applies changes; `--repair` and `--apply` are disabled. Use `node scripts/audit-history.mjs --help` and read [Historical reconciliation and safe dry-run](docs/HISTORICAL_RECONCILIATION_0.4.3.md) before using it. The dashboard marks unreconciled history and says **No changes applied**; its displayed totals are still the recorded values. Keep detailed plans outside the repository and do not share them publicly.
+**Historical integrity review:** A separate offline auditor can classify stored token events and prepare a private, evidence-linked proposal from an isolated SQLite or JSON snapshot. It never applies changes; `--repair` and `--apply` are disabled. Use `node scripts/audit-history.mjs --help` and read [Historical reconciliation and safe dry-run](docs/HISTORICAL_RECONCILIATION_0.4.3.md) before using it. The dashboard also offers an explicit read-only audit over its committed in-memory index and shows evidence-supported, ambiguous, unverifiable legacy and confirmed-adjustment counts. It never audits on hover or ordinary Refresh, and always says **No changes applied**; displayed token totals remain the recorded values. Keep detailed plans outside the repository and do not share them publicly.
+
+For a v0.4.3 review build, follow the [backup and manual QA guide](docs/UPGRADE_QA_0.4.3.md). The [draft release notes](docs/RELEASE_NOTES_0.4.3_DRAFT.md) describe the audit-only scope; no historical repair or new schema migration is included.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 

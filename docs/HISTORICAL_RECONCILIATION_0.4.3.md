@@ -2,7 +2,7 @@
 
 ## Status and evidence boundary
 
-**Implemented:** a deterministic, read-only reconciler, isolated SQLite/JSON snapshot readers, an anonymous aggregate CLI, a private plan writer, and plan validation. **Not implemented or authorized:** applying a plan, historical data migration, automatic repair, or a repaired-history claim in the product. The package and VSIX version remain 0.4.2 during this review branch.
+**Implemented:** a deterministic, read-only reconciler, isolated SQLite/JSON snapshot readers, an anonymous aggregate CLI, a private plan writer, and plan validation. **Not implemented or authorized:** applying a plan, historical data migration, automatic repair, or a repaired-history claim in the product. The v0.4.3 preparation branch changes package metadata only; the audit never changes stored token totals.
 
 The published v0.4.2 collector prevents several future duplicate counts. Earlier versions could count a continuation's inherited cumulative base as new usage, misattribute `ctco_` response-item IDs as sessions, or retain overlapping archived generations. Prior private aggregate estimates are forensic leads, **not** approved corrections. A live database can change while Codex is active, so later snapshots need not reproduce earlier totals.
 
@@ -79,7 +79,9 @@ The tests in this PR prove dry-run immutability, stable plans and stale-plan rej
 
 ## Dashboard and conversation inventory
 
-The dashboard's existing quality warning is now labeled **Historical Data Integrity** and explicitly says **No changes applied**. It shows no fabricated verified count or global confidence percentage. The offline private plan is not sent to React, and there is no repair button. Hover, mini panel, filters, quota history and App Server remain unchanged.
+The dashboard exposes an explicit **Historical Data Integrity** dry-run. The Extension Host copies the already committed session index into an isolated in-memory snapshot, limits source evidence to files present in the latest successful discovery, runs the same reconciler used by the CLI, and sends only anonymous aggregate counts to React. React never accesses SQLite or JSONL and does not implement accounting rules. It shows evidence-supported events, ambiguous observations, unverifiable legacy events, confirmed adjustments, candidate count, generation time and **No changes applied**. `confirmed_unique` is labeled **Supported by available evidence** and is not presented as proof of absolute uniqueness.
+
+The audit runs only after an explicit dashboard action. It is not triggered by rendering, hover, polling or ordinary Refresh. Reconciliation runs in a cancellable Node worker so large snapshots do not block the Extension Host; concurrent requests share one worker, and deactivation terminates it. A later scan that changes indexed files marks the result out of date. The Webview receives no paths, session IDs, prompts, responses, plan evidence or counter-level repair details, and there is no repair button. Hover, mini panel, filters, quota history and App Server remain unchanged.
 
 A separate `Conversations` inventory is feasible only from persistent `session_meta` provenance. It should store canonical ID, source generation, first/last metadata timestamp, explicit parent link and confidence, including metadata-only conversations with no token event. The existing `Usage groups` metric must continue to mean distinct recorded event IDs, and `Usage events` individual accounting rows. Continuations can share a canonical ID; forks need explicit metadata. A new schema and JSON fallback representation would be needed. This is a v0.5.0 design, not a v0.4.3 restructuring.
 
@@ -97,6 +99,8 @@ Run each size in a fresh process with `npm run benchmark:history -- --size 1000`
 Environment: Linux x64, Node 26.2.0, Intel Core i7-12650H, 15.32 GiB physical RAM. These are generated event objects, not 200,000 parsed conversations. The full plan retains one finding per event and therefore grows linearly. A later streaming/batched implementation would need stable event ordering, externalized evidence indexes and a single digest across all batches; it must not decide forks from partial context.
 
 At 200,000 events, whole-process RSS was 83.00 MiB after startup, 207.07 MiB after creating events, 268.62 MiB after creating the synthetic ledger, 521.04 MiB after reconciliation, and 529.20 MiB after serializing the plan. These stages are measured after optional garbage collection, not peak memory. The 100,000-event run measured 83.10, 149.84, 153.28, 360.16 and 379.28 MiB at the same stages. Plans with many adjustments may use more memory than this zero-adjustment fixture.
+
+The dashboard-specific benchmark (`npm run benchmark:integrity-dashboard -- --size N`) measures the same reconciliation plus serialization of the anonymous summary. On the same review machine, one run measured 15.91/6.15 ms (first/repeated) for 1,000 events, 97.68/55.14 ms for 10,000, and 762.31/625.70 ms for 100,000. Summary serialization was about 0.011 ms and the payload was 422–430 bytes. Electron E2E verifies the React post-render signal and exact synthetic category values; these single-run figures are not universal UI latency guarantees. Ordinary Refresh performs no historical reconciliation, and concurrent audit requests are coalesced by the Extension Host.
 
 ## Remaining verification
 
