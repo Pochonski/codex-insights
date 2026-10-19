@@ -2,7 +2,7 @@
   "name": "codex-insights",
   "displayName": "Codex Insights",
   "description": "Local-first Codex analytics with ChatGPT plan quotas, history, and React dashboard",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "codex-insights-local",
   "private": true,
   "license": "MIT",

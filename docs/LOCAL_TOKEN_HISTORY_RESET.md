@@ -17,12 +17,12 @@ The published v0.4.3 extension must nevertheless **not** be used to perform or o
 - it does not honor the reset maintenance lock; and
 - it skips session files larger than 25 MiB, even when a verified cutover checkpoint exists. The reset-capable collector recognizes that checkpoint and reads only bytes appended after the cutover.
 
-Install the reset-compatible review VSIX before preparing the reset. Reload VS Code once to verify that build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with the same reset-compatible or newer collector installed. Do not downgrade to the published v0.4.3 build after execution.
+Install v0.4.4 or a reviewed reset-compatible v0.4.4 VSIX before preparing the reset. Reload VS Code once to verify that build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with v0.4.4 or a newer compatible collector installed. Do not downgrade to v0.4.3 after execution.
 
-The review build intentionally retains manifest version 0.4.3, so the version string alone cannot distinguish it from the published build. After installation and reload, compare the installed Extension Host bundle with the reviewed VSIX:
+Confirm that the installed extension reports version 0.4.4. After installation and reload, also compare the installed Extension Host bundle with the reviewed VSIX:
 
 ```bash
-VSIX="/absolute/path/to/codex-insights-0.4.3-reset-compatible.vsix"
+VSIX="/absolute/path/to/codex-insights-0.4.4.vsix"
 EXPECTED="$(unzip -p "$VSIX" extension/dist/extension.js | sha256sum | cut -d' ' -f1)"
 INSTALLED="$(code --locate-extension codex-insights-local.codex-insights)"
 ACTUAL="$(sha256sum "$INSTALLED/dist/extension.js" | cut -d' ' -f1)"
@@ -50,7 +50,7 @@ Ambiguous observations are retained as provenance. They are not reclassified as 
 
 An unchanged JSONL contributes no events after the cutover. When an existing file grows, parsing resumes at its confirmed byte offset and the first new cumulative counter is compared with the preserved parser state. A continuation or fork uses the retained observation ledger and explicit parent metadata when available. This makes repeated Refresh calls and restarts idempotent without modifying files under `~/.codex/sessions`.
 
-New visible totals start at zero. The first post-cutover usage observation contributes only a demonstrated delta or a typed `last_token_usage`. Ambiguous lineage remains visible in the ledger and is handled conservatively by the v0.4.3 accounting rules.
+New visible totals start at zero. The first post-cutover usage observation contributes only a demonstrated delta or a typed `last_token_usage`. Ambiguous lineage remains visible in the ledger and is handled conservatively by the v0.4.4 accounting rules.
 
 Sources larger than the normal first-import safety limit are streamed during dry-run to build a no-event checkpoint. After authorization, the regular collector can resume from that checkpoint and reads only appended bytes. The cutover scanner accepts complete lines up to 16 MiB so that known Codex compaction and tool-output records do not hide later counters; a larger individual line makes the baseline incomplete and blocks the plan.
 
@@ -80,7 +80,7 @@ The CLI refuses live extension storage as its snapshot input. It reads JSONL sou
 
 Run this from a regular terminal after closing **all** VS Code, VSCodium, Codex CLI, and Codex App Server processes. Do not run it from a VS Code terminal or an active Codex task.
 
-Run the command from the checked-out `fix/local-token-history-reset` source directory at the exact reviewed commit. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
+Run the command from the checked-out v0.4.4 preparation source at the exact reviewed commit. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
 
 For SQLite storage, the external terminal's Node runtime must provide `node:sqlite` (the CI exercises SQLite on Node 22). Verify this before stopping applications:
 
