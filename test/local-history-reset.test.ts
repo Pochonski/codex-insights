@@ -13,6 +13,7 @@ const usage=(input:number,at:string,cached=0,last?:number)=>JSON.stringify({time
 const lines=(...items:string[])=>items.join('\n')+'\n';
 const env=()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-reset-test-')),root=path.join(dir,'sessions');mkdirSync(root);return{dir,root,state:path.join(dir,'sessions-index.json'),file:(name:string)=>path.join(root,name+'.jsonl')}};
 class UnavailableDatabase extends SessionDatabase{override async open(){return false;}}
+const sqliteIt=(()=>{try{require('node:sqlite');return it;}catch{return it.skip;}})();
 
 describe('controlled local token history reset',()=>{
  it('creates a deterministic, non-executable dry-run plan with exact affected totals',async()=>{const f=env();try{
@@ -25,7 +26,7 @@ describe('controlled local token history reset',()=>{
   expect(validateLocalHistoryResetPlan({...plan,snapshotDigest:'changed'},input.snapshot,baseline).valid).toBe(false);
  }finally{rmSync(f.dir,{recursive:true,force:true});}});
 
- it('cuts over an isolated SQLite copy without reimport and counts only later deltas across restart',async()=>{const f=env();try{
+ sqliteIt('cuts over an isolated SQLite copy without reimport and counts only later deltas across restart',async()=>{const f=env();try{
   writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z',80),usage(150,'2026-01-01T00:01:00Z',120)));
   let index=new SessionIndex(f.state);await index.scan(f.root);const input=index.historicalAuditInput(),baseline=index.resetBaseline();index.close();
   const dbPath=path.join(f.dir,'insights.sqlite'),backup=path.join(f.dir,'before-reset.sqlite');copyFileSync(dbPath,backup);
@@ -63,7 +64,7 @@ describe('controlled local token history reset',()=>{
   index=new SessionIndex(f.state);const scan=await index.scan(f.root);expect(aggregate(scan.events).total.inputTokens).toBe(50);expect((await index.scan(f.root)).events).toHaveLength(scan.events.length);index.close();
  }finally{rmSync(f.dir,{recursive:true,force:true});}});
 
- it('rolls back an invalid SQLite baseline and keeps the JSON fallback unchanged',async()=>{const f=env();try{
+ sqliteIt('rolls back an invalid SQLite baseline and keeps the JSON fallback unchanged',async()=>{const f=env();try{
   writeFileSync(f.file('base'),lines(meta('thread'),usage(10,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.root);index.close();
   const before=readFileSync(f.state,'utf8'),db=new SessionDatabase(f.dir);await db.open();const current=db.read(),first=[...current][0];first[1].events=[...first[1].events];
   expect(()=>db.replaceWithBaseline(current)).toThrow('cannot contain token events');expect([...db.read().values()].flatMap(item=>item.events)).toHaveLength(1);db.close();expect(readFileSync(f.state,'utf8')).toBe(before);
