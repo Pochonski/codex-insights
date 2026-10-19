@@ -70,6 +70,14 @@ Run this from a regular terminal after closing **all** VS Code, VSCodium, Codex 
 
 Run the command from the checked-out `fix/local-token-history-reset` source directory at the exact reviewed commit. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
 
+For SQLite storage, the external terminal's Node runtime must provide `node:sqlite` (the CI exercises SQLite on Node 22). Verify this before stopping applications:
+
+```bash
+node -e "require('node:sqlite'); console.log('node:sqlite available')"
+```
+
+Node 20 does not provide this module in the supported CI environment and cannot run the SQLite maintenance operation. It remains supported by the extension through the JSON fallback.
+
 Choose a new backup directory outside extension storage and `~/.codex`. The command refuses an existing directory and writes the backup, manifest, and plan with private permissions.
 
 ```bash
