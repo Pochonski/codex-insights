@@ -104,6 +104,24 @@ export class SessionDatabase {
    db.exec('COMMIT');
   }catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}
  }
+ /**
+  * Replaces token statistics with a parser baseline in one SQLite transaction.
+  * This primitive is intentionally not called by extension activation or Refresh.
+  * Callers must validate a private reset plan and hold a verified backup first.
+  */
+ replaceWithBaseline(cache:Map<string,IndexedFile>):void{
+  if(!this.db)throw new Error('SQLite session storage is not open.');
+  const db=this.db;const checkpoint=db.prepare(`INSERT INTO import_state(source_file,size,mtime_ms,offset,identity,generation,parser_state,partial,parser_version,last_read_at) VALUES(?,?,?,?,?,?,?,?,?,?)`);const inserts=preparedInserts(db);
+  db.exec('BEGIN IMMEDIATE');try{
+   db.exec('DELETE FROM token_events; DELETE FROM counter_observations; DELETE FROM import_state; DELETE FROM sessions; DELETE FROM projects; DELETE FROM models;');
+   for(const [file,data] of cache){
+    if(data.events.length)throw new Error('A reset baseline cannot contain token events.');
+    for(const observation of data.observations??[])insertObservation(inserts,observation,file);
+    writeCheckpoint(checkpoint,file,{...DEFAULT_CHECKPOINT,...data});
+   }
+   db.exec('COMMIT');
+  }catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}
+ }
  close(){this.db?.close();this.db=null;}
 }
 
