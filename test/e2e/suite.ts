@@ -7,6 +7,7 @@ interface E2eState {
   panelDisposed: boolean;
   snapshots: number;
   quotaUpdates: number;
+  auditRuns: number;
   quotaState: string;
   eventCount: number;
   primaryUsedPercent: number | null;
@@ -15,6 +16,8 @@ interface E2eState {
   statusCommand: string;
   statusTrustedCommands: {enabledCommands: readonly string[]};
   mini: {created:boolean;ready:boolean;updates:number;opens:number;html:string};
+  historicalIntegrity: {status:string;eventsAnalyzed?:number;supportedByEvidence?:number;ambiguousObservations?:number;unverifiableLegacy?:number;confirmedAdjustments?:number;changesApplied:false};
+  integrityRendered: null|{eventsAnalyzed:number;supportedByEvidence:number;ambiguousObservations:number;unverifiableLegacy:number;confirmedAdjustments:number};
 }
 
 async function waitFor(predicate: () => Promise<boolean>, description: string, timeoutMs = 15_000): Promise<void> {
@@ -42,6 +45,7 @@ export async function run(): Promise<void> {
   assert.ok(commands.includes('codexInsights.e2e.getState'), 'E2E-only probe was not registered in Test mode');
   assert.ok(commands.includes('codexInsights.copySummary'), 'Copy Summary command was not registered');
   assert.ok(commands.includes('codexInsights.openMiniPanel'), 'Mini Panel command was not registered');
+  assert.ok(commands.includes('codexInsights.e2e.auditHistory'), 'E2E historical audit probe was not registered');
 
   await waitFor(async () => (await state()).statusText.includes('5h 25%'), 'synthetic status bar quota');
   const initial = await state();
@@ -71,6 +75,14 @@ export async function run(): Promise<void> {
   assert.equal(current.quotaState, 'connected', 'synthetic provider should expose a connection state');
   assert.equal(current.eventCount, 1, 'synthetic session data should reach the Extension Host');
   assert.equal(current.primaryUsedPercent, 25, 'initial synthetic quota should reach the snapshot');
+
+  await Promise.all([vscode.commands.executeCommand('codexInsights.e2e.auditHistory'),vscode.commands.executeCommand('codexInsights.e2e.auditHistory')]);
+  await waitFor(async () => (await state()).integrityRendered?.eventsAnalyzed === 3, 'React historical integrity category render');
+  current = await state();
+  assert.deepEqual(current.integrityRendered,{eventsAnalyzed:3,supportedByEvidence:1,ambiguousObservations:1,unverifiableLegacy:1,confirmedAdjustments:0});
+  assert.equal(current.historicalIntegrity.status,'partial');
+  assert.equal(current.historicalIntegrity.changesApplied,false,'E2E audit must remain read-only');
+  assert.equal(current.auditRuns,1,'concurrent audit requests should share one run');
 
   await vscode.commands.executeCommand('codexInsights.e2e.bumpQuota');
   await waitFor(async () => (await state()).primaryUsedPercent === 30, 'a synthetic quota update');

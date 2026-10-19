@@ -8,7 +8,8 @@
 - Added evidence-linked, deterministic private review plans with snapshot/source digests and stale-plan validation.
 - Added overlap **candidates** for repeated cumulative observations, possible inherited bases, rewritten sources, historical technical IDs, archived generations, and missing source evidence. Candidates never change recorded totals.
 - Tightened proof rules for inherited counters so matching parent timestamps and totals alone cannot remove legitimate fork activity.
-- Added a restrained **Historical Data Integrity** dashboard notice: legacy history may remain unverified and **no changes have been applied**.
+- Added an explicit, read-only **Historical Data Integrity** dashboard audit with counts for evidence-supported events, ambiguous observations, unverifiable legacy events and confirmed adjustments.
+- Added complete, partial, loading, failed and out-of-date audit states. The dashboard keeps overlap candidates separate from evidence-backed adjustments and always states that no changes were applied.
 
 ## Safety and compatibility
 
@@ -19,7 +20,7 @@
 
 ## Verification before publication
 
-- Local review-branch verification: 130 automated tests, isolated VS Code Electron E2E, TypeScript, build, package scan, and `npm audit --audit-level=moderate` with zero reported vulnerabilities.
+- Local review-branch verification: 137 automated tests, isolated VS Code Electron E2E including rendered synthetic integrity counts, TypeScript, build, package scan, and `npm audit --audit-level=moderate` with zero reported vulnerabilities.
 - Re-run all checks on the preparation branch and update this section with its final commit, CI result and VSIX SHA-256 before publication.
 - Manual QA remains required for history preservation, official quotas, hover, Refresh and restart persistence.
 

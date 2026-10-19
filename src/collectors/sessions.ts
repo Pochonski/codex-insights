@@ -12,6 +12,7 @@ import {
   type IncrementalFileUpdate,
   type IndexedFile,
 } from '../storage/session-db';
+import type { HistoricalSnapshot, SourceEvidence } from '../reconciliation/historical';
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -537,6 +538,7 @@ export class SessionIndex {
   private readonly loadWarnings: string[] = [];
   private legacyCounters?: CounterObservation[];
   private qualitySummary?: { legacyUnverified: number; ambiguous: number };
+  private survivingSourceFiles = new Set<string>();
   private readonly database: SessionDatabase;
 
   private readonly source: SessionSource;
@@ -623,9 +625,11 @@ export class SessionIndex {
         files = await this.source.findSessionFiles();
       }
     } catch {
+      this.survivingSourceFiles.clear();
       warnings.push('Codex session folder is unavailable; showing previously indexed data.');
       return this.result(warnings, metrics, started);
     }
+    const survivingSourceFiles = new Set<string>();
     if (files.length >= this.source.maxFiles) {
       warnings.push('Session file scan limit (' + this.source.maxFiles + ') reached; additional files may not be indexed.');
     }
@@ -684,6 +688,7 @@ export class SessionIndex {
         const prior = this.cache.get(file);
         const imported = await this.importFile(file, stat, prior, known, prefetched.get(file));
         if (!imported) {
+          survivingSourceFiles.add(file);
           continue;
         }
         metrics.filesModified += 1;
@@ -699,6 +704,7 @@ export class SessionIndex {
         candidate.set(file, imported.file);
         this.commit(imported.update);
         for (const observation of imported.update.observations ?? []) known.add(observation);
+        survivingSourceFiles.add(file);
         changed = true;
         next.clear();
         for (const [key, value] of candidate) {
@@ -708,6 +714,7 @@ export class SessionIndex {
         warnings.push('Could not index session file ' + path.basename(file) + ': ' + this.safeError(error));
       }
     }
+    this.survivingSourceFiles = survivingSourceFiles;
     if (changed) {
       this.persistFallback(next);
     }
@@ -841,6 +848,64 @@ export class SessionIndex {
   private safeError(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error);
     return message.replace(/[\\r\\n]/g, ' ').slice(0, 180);
+  }
+
+  /**
+   * Creates an isolated, in-memory audit input from the committed index.
+   * The returned objects are detached from the live cache. Evidence is limited
+   * to sources discovered by the latest successful scan; archived generations
+   * and missing JSONL files therefore remain explicitly unverifiable.
+   */
+  public historicalAuditInput(): { snapshot: HistoricalSnapshot; evidence: SourceEvidence[] } {
+    const events = [...this.cache.values()].flatMap(entry => entry.events.map(event => ({
+      id: event.id,
+      fingerprint: event.fingerprint,
+      sourceFile: event.sourceFile,
+      sessionId: event.sessionId,
+      timestamp: event.timestamp,
+      counters: {
+        input: event.inputTokens,
+        cached: event.cachedInputTokens,
+        output: event.outputTokens,
+        reasoning: event.reasoningOutputTokens,
+      },
+    })));
+    const eventFingerprint = new Map(events.filter(item => item.fingerprint).map(item => [item.id, item.fingerprint]));
+    const observations = [...this.cache.values()].flatMap(entry => (entry.observations ?? []).map(item => ({
+      id: item.id,
+      key: item.key,
+      sourceFile: item.sourceFile,
+      sessionId: item.sessionId,
+      parentSessionId: item.parentSessionId,
+      timestamp: item.timestamp,
+      total: { input: item.input, cached: item.cached, output: item.output, reasoning: item.reasoning },
+      last: item.lastInput === undefined ? undefined : {
+        input: item.lastInput,
+        cached: item.lastCached ?? 0,
+        output: item.lastOutput ?? 0,
+        reasoning: item.lastReasoning ?? 0,
+      },
+      decision: item.decision,
+    })));
+    const checkpoints = [...this.cache].filter(([sourceFile]) => !sourceFile.includes('#archived:')).map(([sourceFile, entry]) => ({
+      sourceFile,
+      size: entry.size,
+      offset: entry.offset,
+      generation: entry.generation,
+      parserVersion: entry.parserVersion,
+      parserState: entry.parserState,
+    }));
+    const snapshot: HistoricalSnapshot = {
+      storage: this.database.available ? 'sqlite' : 'json',
+      schemaVersion: observations.length ? 6 : 5,
+      events,
+      observations,
+      checkpoints,
+    };
+    const evidence: SourceEvidence[] = observations
+      .filter(item => this.survivingSourceFiles.has(item.sourceFile))
+      .map(item => ({ ...item, eventFingerprint: eventFingerprint.get(item.id) }));
+    return { snapshot, evidence };
   }
 
   public dispose(): void {
