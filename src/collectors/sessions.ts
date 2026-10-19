@@ -13,9 +13,11 @@ import {
   type IndexedFile,
 } from '../storage/session-db';
 import type { HistoricalSnapshot, SourceEvidence } from '../reconciliation/historical';
+import {assertStorageUnlocked} from '../storage/maintenance';
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
+const MAX_CUTOVER_LINE_BYTES = 16 * 1024 * 1024;
 const SAMPLE_BYTES = 4096;
 
 interface TokenTotals {
@@ -68,6 +70,8 @@ interface ParserState {
   model?: string;
   lastTotals?: TokenTotals;
   lastTimestamp?: number;
+  // Set only by an explicitly reviewed local-history cutover baseline.
+  cutoverBaseline?: boolean;
 }
 
 export interface ScanMetrics {
@@ -103,6 +107,8 @@ interface FileImportResult {
   metrics: Pick<ScanMetrics, 'bytesRead' | 'eventsNew' | 'eventsDeduplicated' | 'parseErrors'>;
   warnings: string[];
 }
+
+export interface CutoverEntryResult { entry: IndexedFile; warnings: string[]; bytesRead: number }
 
 export interface SessionSource {
   readonly root: string;
@@ -247,7 +253,7 @@ function stableEventId(sourceFile: string, lineOffset: number, record: Record<st
   return createHash('sha256').update(sourceFile).update(':').update(String(lineOffset)).update(':').update(JSON.stringify(record)).digest('hex').slice(0, 24);
 }
 
-function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number, known: CounterLookup = new CounterLookup()): ParseResult {
+function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number, known: CounterLookup = new CounterLookup(), maxLineBytes = MAX_LINE_BYTES): ParseResult {
   const state: ParserState = { ...previous, lastTotals: previous.lastTotals ? { ...previous.lastTotals } : undefined };
   const events: UsageEvent[] = [];
   const observations: CounterObservation[] = [];
@@ -269,7 +275,7 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     if (line.length === 0) {
       continue;
     }
-    if (line.length > MAX_LINE_BYTES) {
+    if (line.length > maxLineBytes) {
       warnings.push('Skipped an oversized JSONL line in ' + path.basename(sourceFile) + '.');
       continue;
     }
@@ -433,6 +439,34 @@ async function readRange(filePath: string, offset: number, length: number): Prom
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Builds a no-event parser baseline by streaming a source to its last complete
+ * JSONL line. It is used only by the reset dry-run for sources that exceed the
+ * normal first-import limit; conversation content is never retained.
+ */
+export async function buildCutoverEntry(filePath: string): Promise<CutoverEntryResult> {
+  const before = await fs.stat(filePath);
+  if (!before.isFile()) throw new Error('Cutover source is not a regular file.');
+  const chunkSize = 4 * 1024 * 1024;
+  let position = 0, carry: Buffer = Buffer.alloc(0), state = initialState();
+  const known = new CounterLookup(), observations: CounterObservation[] = [], warnings: string[] = [];
+  while (position < before.size) {
+    const chunk = await readRange(filePath, position, Math.min(chunkSize, before.size - position));
+    if (!chunk.length) break;
+    const baseOffset = position - carry.length;
+    const parsed = parseSessionBuffer(carry.length ? Buffer.concat([carry, chunk]) : chunk, filePath, state, baseOffset, known, MAX_CUTOVER_LINE_BYTES);
+    for (const observation of parsed.observations) { known.add(observation); observations.push(observation); }
+    warnings.push(...parsed.warnings); state = parsed.state; carry = parsed.partial; position += chunk.length;
+  }
+  const after = await fs.stat(filePath);
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || identityOf(after) !== identityOf(before)) throw new Error('File changed while its cutover baseline was built.');
+  const prefix = await readRange(filePath, 0, Math.min(before.size, SAMPLE_BYTES));
+  state.cutoverBaseline = true;
+  return { bytesRead: before.size + prefix.length, warnings, entry: indexedFile({ size: before.size, mtimeMs: before.mtimeMs,
+    offset: before.size - carry.length, identity: identityOf(before) ?? null, generation: generationOf(prefix), parserState: encodeState(state),
+    partial: carry.toString('base64'), parserVersion: SESSION_PARSER_VERSION, lastReadAt: Date.now(), events: [], observations }) };
 }
 
 async function readSessionMetadata(filePath: string, size: number): Promise<{ id?: string; bytesRead: number }> {
@@ -612,6 +646,7 @@ export class SessionIndex {
 
   private async scanInternal(root?: string): Promise<SessionScanResult> {
     const started = performance.now();
+    try{assertStorageUnlocked(path.dirname(this.source.stateFile));}catch(error){return {filesScanned:0,events:[],warnings:[this.safeError(error)],metrics:{filesInspected:0,filesModified:0,bytesRead:0,eventsNew:0,eventsDeduplicated:0,parseErrors:0,durationMs:performance.now()-started}};}
     await this.ensureLoaded();
     const warnings: string[] = [...this.loadWarnings];
     const metrics: ScanMetrics = { filesInspected: 0, filesModified: 0, bytesRead: 0, eventsNew: 0, eventsDeduplicated: 0, parseErrors: 0, durationMs: 0 };
@@ -679,13 +714,14 @@ export class SessionIndex {
       metrics.filesInspected += 1;
       try {
         const stat = await fs.stat(file);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) {
-          if (stat.size > MAX_FILE_BYTES) {
+        const prior = this.cache.get(file);
+        const cutoverBaseline = prior ? decodeState(prior.parserState).cutoverBaseline === true : false;
+        if (!stat.isFile() || (stat.size > MAX_FILE_BYTES && !cutoverBaseline)) {
+          if (stat.size > MAX_FILE_BYTES && !cutoverBaseline) {
             warnings.push('Skipped oversized session file ' + path.basename(file) + '.');
           }
           continue;
         }
-        const prior = this.cache.get(file);
         const imported = await this.importFile(file, stat, prior, known, prefetched.get(file));
         if (!imported) {
           survivingSourceFiles.add(file);
@@ -811,6 +847,7 @@ export class SessionIndex {
   }
 
   private persistFallback(cache: Map<string, IndexedFile>): void {
+    assertStorageUnlocked(path.dirname(this.source.stateFile));
     if (!this.fallbackWritable) {
       return;
     }
@@ -906,6 +943,25 @@ export class SessionIndex {
       .filter(item => this.survivingSourceFiles.has(item.sourceFile))
       .map(item => ({ ...item, eventFingerprint: eventFingerprint.get(item.id) }));
     return { snapshot, evidence };
+  }
+
+  /**
+   * Returns a detached cutover baseline. Existing token events are deliberately
+   * omitted, while parser checkpoints and counter observations are retained so
+   * old JSONL bytes cannot be imported again after an authorized reset.
+   */
+  public resetBaseline(): Map<string, IndexedFile> {
+    const result = new Map<string, IndexedFile>();
+    for (const [file, entry] of this.cache) {
+      if (file.includes('#archived:')) continue;
+      result.set(file, {
+        ...entry,
+        parserState: encodeState({ ...decodeState(entry.parserState), cutoverBaseline: true }),
+        events: [],
+        observations: (entry.observations ?? []).map(item => ({ ...item })),
+      });
+    }
+    return result;
   }
 
   public dispose(): void {

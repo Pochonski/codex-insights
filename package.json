@@ -103,6 +103,8 @@
     "audit:sessions": "node scripts/audit-sessions.mjs",
     "audit:tokens": "node scripts/reconcile-tokens.mjs",
     "audit:history": "node scripts/audit-history.mjs",
+    "reset:history": "node scripts/reset-local-history.mjs",
+    "reset:history:execute": "node scripts/apply-local-history-reset.mjs",
     "benchmark:history": "node --expose-gc scripts/benchmark-history.mjs",
     "screenshot:demo": "npm run build:webview && node scripts/render-dashboard-demo.mjs",
     "scan:package": "node scripts/check-sensitive-files.mjs",
