@@ -8,6 +8,19 @@ A separate source-repository maintenance command implements preparation, explici
 
 Official ChatGPT quota samples, Codex authentication, and Codex JSONL conversations are outside this operation.
 
+## Required extension build and installation order
+
+The published v0.4.3 storage schema can read the post-reset SQLite database, observation ledger, checkpoints, and JSON fallback. A cross-version synthetic check also confirmed that it preserves an unchanged normal-size checkpoint and records only the later delta from an appended cumulative counter.
+
+The published v0.4.3 extension must nevertheless **not** be used to perform or operate after this reset. It predates two required runtime safeguards:
+
+- it does not honor the reset maintenance lock; and
+- it skips session files larger than 25 MiB, even when a verified cutover checkpoint exists. The reset-capable collector recognizes that checkpoint and reads only bytes appended after the cutover.
+
+Install the reset-compatible review VSIX before preparing the reset. Reload VS Code once to verify that build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with the same reset-compatible or newer collector installed. Do not downgrade to the published v0.4.3 build after execution.
+
+The maintenance scripts themselves remain source-repository commands and are not included as extension UI actions. Installing the VSIX does not reset anything.
+
 ## Why the safe strategy is a complete statistics reset
 
 `Legacy unverified` is derived from the evidence that remains available; it is not a persistent row-level deletion marker. Older token events can share sessions, counter observations, fingerprints, and checkpoints with supported or ambiguous observations. Missing source generations prevent a complete proof of which legacy rows are duplicates.
@@ -54,6 +67,8 @@ The CLI refuses live extension storage as its snapshot input. It reads JSONL sou
 ## Prepare an execution package
 
 Run this from a regular terminal after closing **all** VS Code, VSCodium, Codex CLI, and Codex App Server processes. Do not run it from a VS Code terminal or an active Codex task.
+
+Run the command from the checked-out `fix/local-token-history-reset` source directory at the exact reviewed commit. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
 
 Choose a new backup directory outside extension storage and `~/.codex`. The command refuses an existing directory and writes the backup, manifest, and plan with private permissions.
 
