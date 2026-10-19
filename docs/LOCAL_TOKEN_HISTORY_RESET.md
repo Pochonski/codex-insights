@@ -19,6 +19,18 @@ The published v0.4.3 extension must nevertheless **not** be used to perform or o
 
 Install the reset-compatible review VSIX before preparing the reset. Reload VS Code once to verify that build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with the same reset-compatible or newer collector installed. Do not downgrade to the published v0.4.3 build after execution.
 
+The review build intentionally retains manifest version 0.4.3, so the version string alone cannot distinguish it from the published build. After installation and reload, compare the installed Extension Host bundle with the reviewed VSIX:
+
+```bash
+VSIX="/absolute/path/to/codex-insights-0.4.3-reset-compatible.vsix"
+EXPECTED="$(unzip -p "$VSIX" extension/dist/extension.js | sha256sum | cut -d' ' -f1)"
+INSTALLED="$(code --locate-extension codex-insights-local.codex-insights)"
+ACTUAL="$(sha256sum "$INSTALLED/dist/extension.js" | cut -d' ' -f1)"
+test "$EXPECTED" = "$ACTUAL" && echo "reset-compatible collector verified"
+```
+
+If the comparison fails or `--locate-extension` resolves another profile, stop. Select the intended VS Code profile, reinstall the reviewed VSIX, reload, and repeat the comparison before preparation.
+
 The maintenance scripts themselves remain source-repository commands and are not included as extension UI actions. Installing the VSIX does not reset anything.
 
 ## Why the safe strategy is a complete statistics reset
