@@ -65,7 +65,7 @@ npm run benchmark
 
 Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `xvfb-run -a npm run test:e2e`. The suite downloads VS Code 1.90.0 on first run, uses synthetic data, and does not use Codex credentials or App Server. See [the E2E guide](docs/E2E_TESTING_0.4.1.md).
 
-The controlled local-token reset remains dry-run only. `npm run reset:history` can calculate and validate a private cutover plan from an isolated storage snapshot; application flags are blocked. See [Controlled local token history reset](docs/LOCAL_TOKEN_HISTORY_RESET.md).
+The controlled local-token reset is an explicit source-repository maintenance operation. `npm run reset:history` remains read-only; preparation, execution, and restoration use a separate command with writer-process checks, a verified persistent backup, a maintenance lock, an exact confirmation phrase, and the full approved plan ID. It is never invoked by activation or Refresh. See [Controlled local token history reset](docs/LOCAL_TOKEN_HISTORY_RESET.md).
 
 ## Architecture and data sources
 

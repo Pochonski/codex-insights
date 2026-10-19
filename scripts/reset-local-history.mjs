@@ -39,14 +39,7 @@ try{
  const snapshotFile=await isolated(dbFile??jsonFile);
  const root=await sourceDirectory(sources);
  const snapshot=dbFile?await api.readSqliteSnapshot(snapshotFile):api.readJsonSnapshot(snapshotFile);
- const source=new api.DefaultSessionSource(root,path.join(temporary,'baseline.json'),100000);
- const index=new api.SessionIndex(source);
- let scan,baseline;
- try{scan=await index.scan();baseline=index.resetBaseline();}finally{index.close();}
- const discovered=await source.findSessionFiles();
- for(const file of discovered)if(!baseline.has(file)){const cutover=await api.buildCutoverEntry(file);baseline.set(file,cutover.entry);scan.metrics.bytesRead+=cutover.bytesRead;scan.warnings.push(...cutover.warnings);}
- const unsafe=scan.warnings.filter(message=>/^(Session file scan limit|Skipped an oversized JSONL line|Could not index session file|Codex session folder is unavailable)/i.test(message));
- if(unsafe.length){const reasons=unsafe.map(message=>message.startsWith('Session file scan limit')?'scan-limit':message.startsWith('Skipped oversized')?'oversized-file':message.startsWith('Could not index')?'index-error':'source-unavailable');throw new Error('A complete baseline could not be established: '+[...new Set(reasons)].join(', ')+'.');}
+ const cutover=await api.buildResetBaselineFromSources(root,path.join(temporary,'baseline.json')),baseline=cutover.baseline;
  const plan=api.buildLocalHistoryResetPlan(snapshot,baseline);
  if(command==='plan'){
   const handle=await open(path.resolve(output),'wx',0o600);try{await handle.writeFile(JSON.stringify(plan,null,2));}finally{await handle.close();}await chmod(path.resolve(output),0o600);
@@ -54,5 +47,5 @@ try{
  if(command==='validate'){
   const stored=JSON.parse(await readFile(await isolated(planFile),'utf8'));
   const result=api.validateLocalHistoryResetPlan(stored,snapshot,baseline);console.log(JSON.stringify(result,null,2));if(!result.valid)process.exitCode=1;
- }else console.log(JSON.stringify({...api.publicLocalHistoryResetSummary(plan),sourceFilesInspected:scan.metrics.filesInspected,sourceBytesRead:scan.metrics.bytesRead,sourceParseErrors:scan.metrics.parseErrors,sourceWarnings:scan.warnings.length,privatePlanWritten:command==='plan'},null,2));
+ }else console.log(JSON.stringify({...api.publicLocalHistoryResetSummary(plan),sourceFilesInspected:cutover.filesInspected,sourceBytesRead:cutover.bytesRead,sourceParseErrors:cutover.parseErrors,sourceWarnings:cutover.warnings.length,privatePlanWritten:command==='plan'},null,2));
 }finally{await rm(temporary,{recursive:true,force:true});}

@@ -2,7 +2,9 @@
 
 ## Status
 
-Codex Insights can generate a deterministic **dry-run plan** for a new local-token cutover. Applying that plan to personal storage is deliberately disabled. The extension does not reset data during activation or Refresh, and the CLI rejects `--apply`, `--repair`, and `--execute`.
+Codex Insights can generate a deterministic **dry-run plan** for a new local-token cutover. The extension does not reset data during activation or Refresh. Its read-only audit CLI still rejects `--apply`, `--repair`, and `--execute`.
+
+A separate source-repository maintenance command implements preparation, explicit execution, and restoration. It is not packaged as an extension command and has no UI or automatic trigger. Execution requires Linux process verification, a persistent verified backup, an unchanged plan and source baseline, the exact confirmation phrase, and the complete plan ID.
 
 Official ChatGPT quota samples, Codex authentication, and Codex JSONL conversations are outside this operation.
 
@@ -49,22 +51,64 @@ npm run reset:history -- validate \
 
 The CLI refuses live extension storage as its snapshot input. It reads JSONL sources, but builds its baseline in a temporary private directory. Output is aggregated; the private plan contains paths and checkpoint data and must never be committed or packaged.
 
-## Future authorized application
+## Prepare an execution package
 
-Before an application path can be exposed, it must:
+Run this from a regular terminal after closing **all** VS Code, VSCodium, Codex CLI, and Codex App Server processes. Do not run it from a VS Code terminal or an active Codex task.
+
+Choose a new backup directory outside extension storage and `~/.codex`. The command refuses an existing directory and writes the backup, manifest, and plan with private permissions.
+
+```bash
+npm run reset:history:execute -- prepare \
+  --storage-dir "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights" \
+  --state-file "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights/sessions-index.json" \
+  --sources "$HOME/.codex/sessions" \
+  --backup-dir "$HOME/CodexInsightsBackups/before-local-reset-YYYYMMDD-HHMMSS" \
+  --plan-output "$HOME/CodexInsightsBackups/local-reset-plan-YYYYMMDD-HHMMSS.json" \
+  --storage sqlite
+```
+
+Preparation performs no token reset. It creates a SQLite backup through the SQLite backup API, copies fallback state, runs `PRAGMA integrity_check`, hashes every backup file, builds the cutover baseline, and prints the plan ID and current affected totals. Review those totals before authorizing execution.
+
+## Explicit execution
+
+Keep all writer processes stopped. Use the unchanged backup and plan from preparation. Replace `<FULL_PLAN_ID>` with the entire value printed by `prepare`.
+
+```bash
+npm run reset:history:execute -- \
+  --plan "$HOME/CodexInsightsBackups/local-reset-plan-YYYYMMDD-HHMMSS.json" \
+  --storage-dir "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights" \
+  --state-file "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights/sessions-index.json" \
+  --sources "$HOME/.codex/sessions" \
+  --backup-dir "$HOME/CodexInsightsBackups/before-local-reset-YYYYMMDD-HHMMSS" \
+  --confirm "RESET LOCAL TOKEN HISTORY" \
+  --confirm-plan "<FULL_PLAN_ID>"
+```
+
+The command:
 
 1. stop extension writes and close SQLite connections;
-2. create and hash a consistent SQLite backup plus fallback state;
-3. pass `PRAGMA integrity_check` on the backup;
-4. regenerate and validate the plan against the unchanged storage snapshot and JSONL baseline;
-5. replace events, observations, checkpoints, and fallback state as a coordinated operation with rollback;
-6. reopen storage and verify zero visible token events, retained checkpoints, and unchanged quota history;
-7. run two unchanged Refresh operations, then verify one synthetic or user-approved new event contributes exactly once.
+2. verifies that VS Code and Codex writer processes are absent;
+3. acquires a private maintenance lock respected by session and quota writers;
+4. verifies all backup hashes and SQLite integrity;
+5. revalidates the complete plan against live storage and every current JSONL source;
+6. stages the fallback state and replaces SQLite token tables in one transaction;
+7. verifies zero token events, retained baseline observations/checkpoints, and an unchanged quota digest;
+8. rescans sources before success; any detected change causes restoration from the verified backup.
 
-No personal application implementation is enabled in v0.4.3.
+SQLite and JSON cannot share one filesystem transaction. The staged fallback plus automatic restoration provides rollback across the two stores. A persistent backup remains after success.
 
 ## Restoration
 
-Stop VS Code before restoration. Preserve the failed/reset storage separately, then restore the complete verified backup set, including SQLite state and fallback JSON. Do not mix a restored main database with newer WAL or SHM files. Run `PRAGMA integrity_check`, reopen the extension, and compare stored event and token totals with the backup manifest.
+Stop VS Code and Codex before restoration. If post-reset statistics matter, copy them separately first. Restoration intentionally discards local statistics written after the backup:
+
+```bash
+npm run reset:history:execute -- restore \
+  --storage-dir "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights" \
+  --state-file "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights/sessions-index.json" \
+  --backup-dir "$HOME/CodexInsightsBackups/before-local-reset-YYYYMMDD-HHMMSS" \
+  --confirm "RESTORE CODEX INSIGHTS BACKUP AND DISCARD NEWER LOCAL STATISTICS"
+```
+
+Restoration verifies the manifest, removes incompatible WAL/SHM files, restores SQLite and fallback state together, reruns `PRAGMA integrity_check`, and verifies the restored snapshot digest before releasing the maintenance lock.
 
 Restoring an older backup discards local statistics written after that backup. It does not alter Codex conversations or official quota data.

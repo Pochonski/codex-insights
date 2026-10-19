@@ -1,6 +1,7 @@
 import {mkdirSync} from 'node:fs';
 import path from 'node:path';
 import type {UsageEvent} from '../core/types';
+import {assertStorageUnlocked} from './maintenance';
 
 export const SESSION_PARSER_VERSION=2;
 export interface CounterObservation {id:string;key:string;sourceFile:string;sessionId:string;parentSessionId?:string;timestamp:string;input:number;output:number;cached:number;reasoning:number;lastInput?:number;lastOutput?:number;lastCached?:number;lastReasoning?:number;decision:'counted'|'duplicate'|'inherited'|'ambiguous';}
@@ -15,11 +16,12 @@ const DEFAULT_CHECKPOINT:Omit<FileCheckpoint,'size'|'mtimeMs'>={offset:0,identit
 export class SessionDatabase {
  private db:Db|null=null;
  private _error:string|null=null;
- constructor(private readonly directory:string){}
+ constructor(private readonly directory:string,private readonly maintenanceToken?:string){}
  get available(){return this.db!==null;}
  get error(){return this._error;}
  async open():Promise<boolean>{
   if(this.db)return true;
+  assertStorageUnlocked(this.directory,this.maintenanceToken);
   let sqlite:typeof import('node:sqlite');
   try{sqlite=await import('node:sqlite');}catch(error){const code=(error as {code?:string}).code;if(code==='ERR_UNKNOWN_BUILTIN_MODULE'||code==='ERR_MODULE_NOT_FOUND')return false;throw error;}
   mkdirSync(this.directory,{recursive:true,mode:0o700});let db:Db|null=null;
@@ -79,7 +81,7 @@ export class SessionDatabase {
   return result;
  }
  applyIncremental(update:IncrementalFileUpdate):void{
-  if(!this.db)return;const db=this.db;const removeState=db.prepare('DELETE FROM import_state WHERE source_file=?');
+  if(!this.db)return;assertStorageUnlocked(this.directory,this.maintenanceToken);const db=this.db;const removeState=db.prepare('DELETE FROM import_state WHERE source_file=?');
   const moveEvents=db.prepare('UPDATE token_events SET source_file=? WHERE source_file=?');
   const moveObservations=db.prepare('UPDATE counter_observations SET source_file=? WHERE source_file=?');
   const checkpoint=db.prepare(`INSERT INTO import_state(source_file,size,mtime_ms,offset,identity,generation,parser_state,partial,parser_version,last_read_at) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -95,7 +97,7 @@ export class SessionDatabase {
  }
  /** Legacy full-cache synchronization retained for migration tools and benchmarks. */
  sync(cache:Map<string,IndexedFile>):void{
-  if(!this.db)return;const db=this.db;const indexed=new Map<string,{size:number;mtimeMs:number}>();
+  if(!this.db)return;assertStorageUnlocked(this.directory,this.maintenanceToken);const db=this.db;const indexed=new Map<string,{size:number;mtimeMs:number}>();
   for(const item of db.prepare('SELECT source_file,size,mtime_ms FROM import_state').all()){const row=item as Record<string,unknown>;indexed.set(String(row.source_file),{size:Number(row.size),mtimeMs:Number(row.mtime_ms)});}
   const remove=db.prepare('DELETE FROM token_events WHERE source_file=?'),removeObservations=db.prepare('DELETE FROM counter_observations WHERE source_file=?'),deleteState=db.prepare('DELETE FROM import_state WHERE source_file=?');const checkpoint=db.prepare(`INSERT INTO import_state(source_file,size,mtime_ms,offset,identity,generation,parser_state,partial,parser_version,last_read_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source_file) DO UPDATE SET size=excluded.size,mtime_ms=excluded.mtime_ms,offset=excluded.offset,identity=excluded.identity,generation=excluded.generation,parser_state=excluded.parser_state,partial=excluded.partial,parser_version=excluded.parser_version,last_read_at=excluded.last_read_at`);const inserts=preparedInserts(db);
   db.exec('BEGIN IMMEDIATE');try{
@@ -111,6 +113,7 @@ export class SessionDatabase {
   */
  replaceWithBaseline(cache:Map<string,IndexedFile>):void{
   if(!this.db)throw new Error('SQLite session storage is not open.');
+  assertStorageUnlocked(this.directory,this.maintenanceToken);
   const db=this.db;const checkpoint=db.prepare(`INSERT INTO import_state(source_file,size,mtime_ms,offset,identity,generation,parser_state,partial,parser_version,last_read_at) VALUES(?,?,?,?,?,?,?,?,?,?)`);const inserts=preparedInserts(db);
   db.exec('BEGIN IMMEDIATE');try{
    db.exec('DELETE FROM token_events; DELETE FROM counter_observations; DELETE FROM import_state; DELETE FROM sessions; DELETE FROM projects; DELETE FROM models;');

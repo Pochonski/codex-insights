@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {mkdirSync,existsSync,readFileSync,writeFileSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import type {QuotaStatus} from '../providers/quotas';
+import {assertStorageUnlocked} from './maintenance';
 export interface QuotaPoint {observedAt:number;usedPercent:number;windowDurationMins:number|null;limitId:string;windowKind:string;resetAt:number|null;}
 interface Row extends QuotaPoint {accountHash:string;}
 interface DatabaseLike {exec(sql:string):void;prepare(sql:string):{run(...args:(string|number|null)[]):unknown;all(...args:(string|number|null)[]):unknown[]};close():void;}
@@ -15,6 +16,7 @@ export class QuotaHistoryStore {
  get error(){return this._error;}
  async open():Promise<boolean>{
   if(this.db||this.fallback)return true;
+  assertStorageUnlocked(this.storageDirectory);
   mkdirSync(this.storageDirectory,{recursive:true,mode:0o700});
   let sqlite:typeof import('node:sqlite')|null=null;
   try{sqlite=await import('node:sqlite');}catch(error){const code=(error as {code?:string}).code;if(code!=='ERR_UNKNOWN_BUILTIN_MODULE'&&code!=='ERR_MODULE_NOT_FOUND')throw error;}
@@ -41,6 +43,7 @@ export class QuotaHistoryStore {
  static accountHash(accountId:string){return createHash('sha256').update(accountId).digest('hex');}
  save(accountId:string|null,status:QuotaStatus):void{
   if(!accountId||status.state!=='connected')return;
+  assertStorageUnlocked(this.storageDirectory);
   const accountHash=QuotaHistoryStore.accountHash(accountId),now=Math.floor(Date.now()/60000)*60;
   const rows:Row[]=[];for(const bucket of status.buckets)for(const w of bucket.windows){const resetAt=w.resetAt?Math.floor(Date.parse(w.resetAt)/1000):null;rows.push({accountHash,observedAt:now,limitId:bucket.id,windowKind:w.kind,windowDurationMins:w.durationMinutes,usedPercent:w.usedPercent,resetAt:Number.isFinite(resetAt)?resetAt:null});}
   if(this.db){const insert=this.db.prepare('INSERT INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_hash,observed_at,limit_id,window_kind) DO UPDATE SET used_percent=excluded.used_percent,reset_at=excluded.reset_at');this.db.exec('BEGIN IMMEDIATE');try{for(const r of rows)insert.run(r.accountHash,r.observedAt,r.limitId,r.windowKind,r.windowDurationMins,r.usedPercent,r.resetAt);this.db.prepare('DELETE FROM quota_samples WHERE observed_at < ?').run(now-RETENTION);this.db.exec('COMMIT');}catch(error){try{this.db.exec('ROLLBACK');}catch{}throw error;}}

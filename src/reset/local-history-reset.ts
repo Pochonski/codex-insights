@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type {HistoricalSnapshot,Counters} from '../reconciliation/historical';
 import {snapshotDigest} from '../reconciliation/historical';
+import {buildCutoverEntry,DefaultSessionSource,SessionIndex} from '../collectors/sessions';
 import {SessionDatabase,type IndexedFile} from '../storage/session-db';
 
 export interface LocalHistoryResetPlan {
@@ -11,6 +12,7 @@ export interface LocalHistoryResetPlan {
   kind:'complete-local-token-reset';
   createdAt:string;
   cutoffAt:string;
+  storage:'sqlite'|'json';
   snapshotDigest:string;
   baselineDigest:string;
   planId:string;
@@ -20,7 +22,7 @@ export interface LocalHistoryResetPlan {
 }
 
 export interface LocalHistoryResetSummary {
-  mode:'dry-run'; strategy:'complete-reset'; cutoffAt:string;
+  mode:'dry-run'; strategy:'complete-reset'; cutoffAt:string; storage:'sqlite'|'json';
   affectedEvents:number; affectedSessions:number; affectedTotals:Counters;
   baselineFiles:number; baselineObservations:number; partialFiles:number;
   historicalJsonlModified:false; officialQuotasModified:false; changesApplied:false;
@@ -41,7 +43,7 @@ export function buildLocalHistoryResetPlan(snapshot:HistoricalSnapshot,baseline:
   const totals=snapshot.events.reduce((sum,event)=>add(sum,event.counters),zero());
   const sessions=new Set(snapshot.events.map(event=>event.sessionId)).size;
   const sourceHash=digest(entries);
-  const core={format:1 as const,kind:'complete-local-token-reset' as const,createdAt:now,cutoffAt:now,snapshotDigest:snapshotDigest(snapshot),baselineDigest:sourceHash,
+  const core={format:1 as const,kind:'complete-local-token-reset' as const,createdAt:now,cutoffAt:now,storage:snapshot.storage,snapshotDigest:snapshotDigest(snapshot),baselineDigest:sourceHash,
     affected:{events:snapshot.events.length,sessions,totals},baseline:{files:entries.length,observations:entries.reduce((n,[,entry])=>n+(entry.observations?.length??0),0),partialFiles:entries.filter(([,entry])=>!!entry.partial).length,entries},applicationEnabled:false as const};
   return {...core,planId:digest(core)};
 }
@@ -54,7 +56,12 @@ export function validateLocalHistoryResetPlan(plan:LocalHistoryResetPlan,snapsho
 }
 
 export function publicLocalHistoryResetSummary(plan:LocalHistoryResetPlan):LocalHistoryResetSummary{
-  return {mode:'dry-run',strategy:'complete-reset',cutoffAt:plan.cutoffAt,affectedEvents:plan.affected.events,affectedSessions:plan.affected.sessions,affectedTotals:{...plan.affected.totals},baselineFiles:plan.baseline.files,baselineObservations:plan.baseline.observations,partialFiles:plan.baseline.partialFiles,historicalJsonlModified:false,officialQuotasModified:false,changesApplied:false,applicationEnabled:false};
+  return {mode:'dry-run',strategy:'complete-reset',cutoffAt:plan.cutoffAt,storage:plan.storage,affectedEvents:plan.affected.events,affectedSessions:plan.affected.sessions,affectedTotals:{...plan.affected.totals},baselineFiles:plan.baseline.files,baselineObservations:plan.baseline.observations,partialFiles:plan.baseline.partialFiles,historicalJsonlModified:false,officialQuotasModified:false,changesApplied:false,applicationEnabled:false};
+}
+
+export async function buildResetBaselineFromSources(root:string,temporaryStateFile:string):Promise<{baseline:Map<string,IndexedFile>;filesInspected:number;bytesRead:number;parseErrors:number;warnings:string[]}>{
+  const source=new DefaultSessionSource(root,temporaryStateFile,100000),index=new SessionIndex(source);let scan;
+  try{scan=await index.scan();const baseline=index.resetBaseline(),discovered=await source.findSessionFiles();for(const file of discovered)if(!baseline.has(file)){const cutover=await buildCutoverEntry(file);baseline.set(file,cutover.entry);scan.metrics.bytesRead+=cutover.bytesRead;scan.warnings.push(...cutover.warnings);}const unsafe=scan.warnings.filter(message=>/^(Session file scan limit|Skipped an oversized JSONL line|Could not index session file|Codex session folder is unavailable)/i.test(message));if(unsafe.length)throw new Error('A complete baseline could not be established from all session sources.');return{baseline,filesInspected:discovered.length,bytesRead:scan.metrics.bytesRead,parseErrors:scan.metrics.parseErrors,warnings:[...new Set(scan.warnings)]};}finally{index.close();}
 }
 
 /** Test-only/application-review primitive. Public CLI application stays blocked. */
@@ -68,8 +75,7 @@ export async function applyLocalHistoryResetToIsolatedCopy(plan:LocalHistoryRese
   if(plan.applicationEnabled!==false)throw new Error('Executable reset plans are unsupported.');
   const {planId,...core}=plan;if(digest(core)!==planId)throw new Error('Reset plan integrity check failed.');
   const baseline=new Map(plan.baseline.entries.map(([file,entry])=>[file,{...entry,events:[],observations:(entry.observations??[]).map(item=>({...item}))}]));
-  const database=new SessionDatabase(directory);
-  try{if(await database.open())database.replaceWithBaseline(baseline);}finally{database.close();}
+  if(plan.storage==='sqlite'){const database=new SessionDatabase(directory);try{if(!await database.open())throw new Error('SQLite is unavailable for the isolated reset test.');database.replaceWithBaseline(baseline);}finally{database.close();}}
   const serializable=[...baseline].map(([file,entry])=>({file,...entry}));
   mkdirSync(path.dirname(stateFile),{recursive:true,mode:0o700});
   const temporary=stateFile+'.reset-'+process.pid;

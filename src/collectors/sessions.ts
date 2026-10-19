@@ -13,6 +13,7 @@ import {
   type IndexedFile,
 } from '../storage/session-db';
 import type { HistoricalSnapshot, SourceEvidence } from '../reconciliation/historical';
+import {assertStorageUnlocked} from '../storage/maintenance';
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -645,6 +646,7 @@ export class SessionIndex {
 
   private async scanInternal(root?: string): Promise<SessionScanResult> {
     const started = performance.now();
+    try{assertStorageUnlocked(path.dirname(this.source.stateFile));}catch(error){return {filesScanned:0,events:[],warnings:[this.safeError(error)],metrics:{filesInspected:0,filesModified:0,bytesRead:0,eventsNew:0,eventsDeduplicated:0,parseErrors:0,durationMs:performance.now()-started}};}
     await this.ensureLoaded();
     const warnings: string[] = [...this.loadWarnings];
     const metrics: ScanMetrics = { filesInspected: 0, filesModified: 0, bytesRead: 0, eventsNew: 0, eventsDeduplicated: 0, parseErrors: 0, durationMs: 0 };
@@ -845,6 +847,7 @@ export class SessionIndex {
   }
 
   private persistFallback(cache: Map<string, IndexedFile>): void {
+    assertStorageUnlocked(path.dirname(this.source.stateFile));
     if (!this.fallbackWritable) {
       return;
     }
