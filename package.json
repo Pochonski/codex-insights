@@ -132,5 +132,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Pochonski/codex-insights.git"
+  },
+  "overrides": {
+    "@azure/msal-node": "7.1.2"
   }
 }
