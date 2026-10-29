@@ -4,7 +4,7 @@ Token observations from earlier versions may include inherited cumulative counte
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.4.4** adds a guarded, explicit local token-statistics reset with verified backups, cutover checkpoints, rollback, and restoration. It never runs during activation or Refresh. Historical audit remains read-only, and no stored history is reset without a separately reviewed plan and exact confirmation.
+Version **0.4.5** prepares the reliability fixes from [the deep audit](docs/DEEP_AUDIT_REMEDIATION_0.4.4.md): safer reset ordering and crash recovery, conservative cumulative-token handling, improved JSONL rewrite detection, quota-history recovery, and dashboard Refresh and filter fixes. The guarded local reset introduced in v0.4.4 remains explicit; installing this update does not reset or repair stored history.
 
 ## Features
 
@@ -61,7 +61,7 @@ npm run package
 npm run benchmark
 ```
 
-`build` writes the Extension Host bundle to `dist/extension.js` and the React bundles to `media/dashboard.js` and `media/mini-panel.js`. `package` creates `codex-insights-0.4.4.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds all three bundles. `npm run screenshot:mini` renders synthetic mini panel screenshots from the real bundle using local Chromium. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
+`build` writes the Extension Host bundle to `dist/extension.js` and the React bundles to `media/dashboard.js` and `media/mini-panel.js`. `package` creates `codex-insights-0.4.5.vsix`. These generated files are excluded from Git. Open the folder in VS Code and press **F5** to start an Extension Development Host. `npm run watch` rebuilds all three bundles. `npm run screenshot:mini` renders synthetic mini panel screenshots from the real bundle using local Chromium. The benchmark is synthetic, creates only temporary data, and is documented in [the v0.4.0 comparison](docs/PERFORMANCE_COMPARISON_0.4.0.md). The package excludes the E2E test bundle.
 
 Run the isolated VS Code Electron suite with `npm run test:e2e`; Linux CI uses `xvfb-run -a npm run test:e2e`. The suite downloads VS Code 1.90.0 on first run, uses synthetic data, and does not use Codex credentials or App Server. See [the E2E guide](docs/E2E_TESTING_0.4.1.md).
 
@@ -104,13 +104,14 @@ The dashboard's **Usage groups** count is the number of distinct IDs attached to
 
 **Historical integrity review:** A separate offline auditor can classify stored token events and prepare a private, evidence-linked proposal from an isolated SQLite or JSON snapshot. It never applies changes; `--repair` and `--apply` are disabled. Use `node scripts/audit-history.mjs --help` and read [Historical reconciliation and safe dry-run](docs/HISTORICAL_RECONCILIATION_0.4.3.md) before using it. The dashboard also offers an explicit read-only audit over its committed in-memory index and shows evidence-supported, ambiguous, unverifiable legacy and confirmed-adjustment counts. It never audits on hover or ordinary Refresh, and always says **No changes applied**; displayed token totals remain the recorded values. Keep detailed plans outside the repository and do not share them publicly.
 
-For the v0.4.4 review build, follow the [upgrade and reset QA guide](docs/UPGRADE_QA_0.4.4.md). The [draft release notes](docs/RELEASE_NOTES_0.4.4_DRAFT.md) describe the guarded reset scope. The v0.4.3 audit documentation remains available for historical integrity review.
+For the v0.4.5 review build, follow the [maintenance upgrade QA guide](docs/UPGRADE_QA_0.4.5.md) and [draft release notes](docs/RELEASE_NOTES_0.4.5_DRAFT.md). The [v0.4.4 reset guide](docs/UPGRADE_QA_0.4.4.md) and v0.4.3 audit documentation remain available.
 
 If quotas are unavailable, check `codex --version`, `codex app-server --help`, `codex login status`, and the executable setting, then run **Codex Insights: Refresh**. If sessions are missing, check the session path and selected period. Quota history begins when the extension starts sampling; it cannot be reconstructed from token events.
 
 ## Known limitations and roadmap
 
 - A continuation reads only new bytes. Ambiguous replacement or truncation reconciles the affected file safely.
+- A rewrite confined to the middle of a JSONL can evade the bounded signature if file identity, size, timestamps and sampled prefix all appear unchanged. See [deep audit limitations](docs/DEEP_AUDIT_REMEDIATION_0.4.4.md).
 - The dashboard limits each view to 250 recently active usage-group rows and 500 time points for responsiveness; it does not yet offer a separate inventory of metadata-only conversations.
 - Alerts, predictions, exports, and DOM-level visual Webview automation remain planned.
 

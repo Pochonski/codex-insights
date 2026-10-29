@@ -17,12 +17,12 @@ The published v0.4.3 extension must nevertheless **not** be used to perform or o
 - it does not honor the reset maintenance lock; and
 - it skips session files larger than 25 MiB, even when a verified cutover checkpoint exists. The reset-capable collector recognizes that checkpoint and reads only bytes appended after the cutover.
 
-Install v0.4.4 or a reviewed reset-compatible v0.4.4 VSIX before preparing the reset. Reload VS Code once to verify that build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with v0.4.4 or a newer compatible collector installed. Do not downgrade to v0.4.3 after execution.
+Install a reviewed reset-compatible v0.4.4 or newer VSIX before preparing the reset. The v0.4.5 maintenance build adds explicit crash recovery. Reload VS Code once to verify the installed build, then close every VS Code, VSCodium, Codex CLI, and Codex App Server process. Run `prepare` and any later authorized `execute` from a regular external terminal. Reopen VS Code only with the verified compatible collector installed. Do not downgrade to v0.4.3 after execution.
 
-Confirm that the installed extension reports version 0.4.4. After installation and reload, also compare the installed Extension Host bundle with the reviewed VSIX:
+Confirm that the installed extension reports the version of the reviewed VSIX (0.4.5 for this preparation branch). After installation and reload, also compare the installed Extension Host bundle with the reviewed VSIX:
 
 ```bash
-VSIX="/absolute/path/to/codex-insights-0.4.4.vsix"
+VSIX="/absolute/path/to/codex-insights-0.4.5.vsix"
 EXPECTED="$(unzip -p "$VSIX" extension/dist/extension.js | sha256sum | cut -d' ' -f1)"
 INSTALLED="$(code --locate-extension codex-insights-local.codex-insights)"
 ACTUAL="$(sha256sum "$INSTALLED/dist/extension.js" | cut -d' ' -f1)"
@@ -80,7 +80,7 @@ The CLI refuses live extension storage as its snapshot input. It reads JSONL sou
 
 Run this from a regular terminal after closing **all** VS Code, VSCodium, Codex CLI, and Codex App Server processes. Do not run it from a VS Code terminal or an active Codex task.
 
-Run the command from the checked-out v0.4.4 preparation source at the exact reviewed commit. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
+Run the command from the checked-out, reviewed source at the exact commit matching the installed compatible collector. `prepare` records the current storage and source digests; any subsequent JSONL or storage change invalidates the plan and requires a new backup and preparation.
 
 For SQLite storage, the external terminal's Node runtime must provide `node:sqlite` (the CI exercises SQLite on Node 22). Verify this before stopping applications:
 
