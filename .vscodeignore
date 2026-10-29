@@ -28,6 +28,10 @@ SECURITY.md
 *.sqlite3
 *.sqlite3-*
 *.jsonl
+*plan*.json
+**/manifest.json
+**/sessions-index.json
+**/quota-history.json
 .env
 .env.*
 **/auth.json

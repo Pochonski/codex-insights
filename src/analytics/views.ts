@@ -26,13 +26,14 @@ export function buildAnalyticsView(d:DashboardData,request:unknown,now=Date.now(
  const projectSet=new Set(d.events.map(e=>e.project||'Unknown project'));
  // Keep unmatched selections so a stale filter cannot silently show another session's data.
  const oldest=d.events.reduce((n,e)=>Math.min(n,validTime(e.timestamp)??n),now);
- const customStart=f.startDate?Date.parse(f.startDate+'T00:00:00'):-Infinity;
- const customEnd=f.endDate?Date.parse(f.endDate+'T23:59:59.999'):Infinity;
- const customRangeValid=f.period!=='custom'||(Number.isFinite(customStart)&&Number.isFinite(customEnd)&&customStart<=customEnd);
+ // Calendar dates are UTC in both the Webview and Extension Host, including remote hosts.
+ const customStart=f.startDate?Date.parse(f.startDate+'T00:00:00.000Z'):-Infinity;
+ const customEndExclusive=f.endDate?Date.parse(f.endDate+'T00:00:00.000Z')+86400000:Infinity;
+ const customRangeValid=f.period!=='custom'||(!!f.startDate&&!!f.endDate&&Number.isFinite(customStart)&&Number.isFinite(customEndExclusive)&&customStart<customEndExclusive);
  const unit:'hour'|'day'|'week'=f.period==='24h'?'hour':(f.period==='all'||f.period==='custom')&&now-oldest>120*86400000?'week':'day';
  const since=f.period==='24h'?now-86400000:f.period==='7d'?now-7*86400000:f.period==='30d'?now-30*86400000:f.period==='custom'?customStart:-Infinity;
- const until=f.period==='custom'?customEnd:now+300000;
- const events=d.events.filter(e=>{const t=validTime(e.timestamp);return customRangeValid&&(f.period==='all'||t!==null&&t>=since&&t<=until)&&(!f.session||e.sessionId===f.session)&&(!f.model||(e.model||'Unknown model')===f.model)&&(!f.project||(e.project||'Unknown project')===f.project);});
+ const until=f.period==='custom'?customEndExclusive:now+300000;
+ const events=d.events.filter(e=>{const t=validTime(e.timestamp);return customRangeValid&&(f.period==='all'||t!==null&&t>=since&&(f.period==='custom'?t<until:t<=until))&&(!f.session||e.sessionId===f.session)&&(!f.model||(e.model||'Unknown model')===f.model)&&(!f.project||(e.project||'Unknown project')===f.project);});
  const total=empty();const sessions=new Map<string,SessionSummary>();const filteredLastSeen=new Map<string,number>();const timeline=new Map<number,{at:string;events:number}&Totals>();
  for(const e of events){add(total,e);let s=sessions.get(e.sessionId);if(!s){s={id:e.sessionId,project:e.project,startedAt:e.timestamp,model:e.model,events:0,...empty()};sessions.set(e.sessionId,s);}if(e.model)s.model=e.model;if(e.project)s.project=e.project;s.events++;add(s,e);
  const t=validTime(e.timestamp);if(t!==null){if(t>(filteredLastSeen.get(e.sessionId)??-Infinity))filteredLastSeen.set(e.sessionId,t);const key=bucketTime(t,unit);let point=timeline.get(key);if(!point){point={at:new Date(key).toISOString(),events:0,...empty()};timeline.set(key,point);}point.events++;add(point,e);}}
