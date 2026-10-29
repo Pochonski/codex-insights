@@ -4,7 +4,7 @@ Token observations from earlier versions may include inherited cumulative counte
 
 **Professional analytics and usage monitoring for OpenAI Codex in Visual Studio Code.** Codex Insights is an independent, local-first VS Code extension. It is **not an official OpenAI extension** and sends no custom telemetry.
 
-Version **0.4.5** prepares the reliability fixes from [the deep audit](docs/DEEP_AUDIT_REMEDIATION_0.4.4.md): safer reset ordering and crash recovery, conservative cumulative-token handling, improved JSONL rewrite detection, quota-history recovery, and dashboard Refresh and filter fixes. The guarded local reset introduced in v0.4.4 remains explicit; installing this update does not reset or repair stored history.
+Version **0.4.5** includes the reliability fixes from [the deep audit](docs/DEEP_AUDIT_REMEDIATION_0.4.4.md): safer reset ordering and crash recovery, conservative cumulative-token handling, improved JSONL rewrite detection, quota-history recovery, and dashboard Refresh and filter fixes. The guarded local reset introduced in v0.4.4 remains explicit; installing this update does not reset or repair stored history.
 
 ## Features
 
