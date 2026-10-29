@@ -100,6 +100,7 @@
     "typecheck": "tsc --noEmit",
     "package": "npm run build && vsce package --no-dependencies",
     "benchmark": "node scripts/benchmark.mjs",
+    "benchmark:session-memory": "node --expose-gc scripts/benchmark-session-memory.mjs",
     "audit:sessions": "node scripts/audit-sessions.mjs",
     "audit:tokens": "node scripts/reconcile-tokens.mjs",
     "audit:history": "node scripts/audit-history.mjs",

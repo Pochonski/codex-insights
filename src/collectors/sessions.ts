@@ -1078,6 +1078,11 @@ export class SessionIndex {
 
   public dispose(): void {
     this.database.close();
+    this.cache.clear();
+    this.sortedEvents = undefined;
+    this.legacyCounters = undefined;
+    this.qualitySummary = undefined;
+    this.survivingSourceFiles.clear();
   }
 
   public close(): void {
