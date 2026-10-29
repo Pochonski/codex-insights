@@ -1,11 +1,41 @@
 import {describe,it,expect} from 'vitest';
-import {mkdtempSync,writeFileSync,rmSync,readFileSync,statSync} from 'node:fs';
+import {chmodSync,mkdirSync,mkdtempSync,writeFileSync,rmSync,readFileSync,statSync,utimesSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {SessionIndex,DefaultSessionSource,findSessionFiles} from '../src/collectors/sessions';
 import {aggregate} from '../src/analytics/aggregate';
+import {SessionDatabase} from '../src/storage/session-db';
 const record=(n:number)=>JSON.stringify({timestamp:'2026-10-15T00:00:00Z',type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
 describe('persistent session index',()=>{
+ it('detects a same-size in-place rewrite even when mtime and inode remain unchanged',async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),'codex-same-stat-'));
+  try{
+   const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);
+   const file=path.join(root,'session.jsonl'),state=path.join(dir,'index.json');
+   writeFileSync(file,record(100)+'\n');
+   const fixedTime=new Date('2026-10-15T00:00:00.000Z');
+   utimesSync(file,fixedTime,fixedTime);
+   const index=new SessionIndex(state);
+   try{
+    expect(aggregate((await index.scan(root)).events).total.inputTokens).toBe(100);
+    const before=statSync(file);
+    writeFileSync(file,record(100).replace('2026-10-15','2026-10-16')+'\n');
+    utimesSync(file,before.atime,before.mtime);
+    expect(statSync(file).size).toBe(before.size);
+    expect(statSync(file).ino).toBe(before.ino);
+    expect(statSync(file).mtimeMs).toBe(before.mtimeMs);
+    const rescanned=await index.scan(root);
+    expect(rescanned.metrics.filesModified).toBe(1);
+    expect(aggregate(rescanned.events).total.inputTokens).toBe(100);
+   }finally{index.close();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+ });
+ it('reconciles a same-size rewrite beyond the sampled prefix when ctime changes',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-middle-rewrite-'));try{
+  const root=path.join(dir,'sessions');mkdirSync(root);const file=path.join(root,'session.jsonl'),state=path.join(dir,'index.json');
+  const padding=JSON.stringify({type:'noop',payload:{padding:'x'.repeat(5000)}})+'\n';
+  writeFileSync(file,record(100)+'\n'+padding+record(150)+'\n');const fixedTime=new Date('2026-10-15T00:00:00.000Z');utimesSync(file,fixedTime,fixedTime);const index=new SessionIndex(state);
+  try{await index.scan(root);const before=statSync(file);await new Promise(resolve=>setTimeout(resolve,5));writeFileSync(file,record(100)+'\n'+padding+record(200)+'\n');utimesSync(file,before.atime,before.mtime);const after=statSync(file);expect(after.size).toBe(before.size);expect(after.mtimeMs).toBe(before.mtimeMs);expect(after.ctimeMs).not.toBe(before.ctimeMs);const scan=await index.scan(root);expect(scan.metrics.filesModified).toBe(1);expect(scan.metrics.bytesRead).toBeGreaterThan(4096);}finally{index.close();}
+ }finally{rmSync(dir,{recursive:true,force:true});}});
  it('recovers the canonical session after a legacy ctco checkpoint without changing old token amounts',async()=>{
   const dir=mkdtempSync(path.join(tmpdir(),'codex-legacy-identity-'));
   try{
@@ -63,4 +93,9 @@ describe('rotated file copies',()=>{
 });
 describe('corrupt session fallback',()=>{
  it('preserves invalid JSON and continues from SQLite without overwriting it',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-session-corrupt-'));try{const root=path.join(dir,'sessions');const fs=await import('node:fs/promises');await fs.mkdir(root);const state=path.join(dir,'sessions-index.json');writeFileSync(state,'[invalid',{mode:0o600});writeFileSync(path.join(root,'s.jsonl'),record(10)+'\n');const index=new SessionIndex(state);try{const scan=await index.scan(root);expect(scan.events).toHaveLength(1);expect(scan.warnings.join(' ')).toContain('preserved');expect(readFileSync(state,'utf8')).toBe('[invalid');}finally{index.close();}}finally{rmSync(dir,{recursive:true,force:true});}});
+ it('does not report unpersisted events when both SQLite and JSON fallback are unavailable',async()=>{const dir=mkdtempSync(path.join(tmpdir(),'codex-session-unavailable-'));try{const root=path.join(dir,'sessions');mkdirSync(root);const state=path.join(dir,'sessions-index.json');writeFileSync(state,'[invalid',{mode:0o600});writeFileSync(path.join(root,'s.jsonl'),record(10)+'\n');class UnavailableDatabase extends SessionDatabase{override async open(){return false;}}const index=new SessionIndex(state,new UnavailableDatabase(dir));try{await expect(index.scan(root)).rejects.toThrow('not persisted');}finally{index.close();}expect(readFileSync(state,'utf8')).toBe('[invalid');}finally{rmSync(dir,{recursive:true,force:true});}});
+ it('retains SQLite events when writing the JSON sidecar fails',async()=>{try{await import('node:sqlite');}catch{return;}const dir=mkdtempSync(path.join(tmpdir(),'codex-sidecar-fail-'));try{
+  const root=path.join(dir,'sessions'),fallbackDir=path.join(dir,'fallback');mkdirSync(root);mkdirSync(fallbackDir);writeFileSync(path.join(root,'s.jsonl'),record(10)+'\n');const index=new SessionIndex(path.join(fallbackDir,'sessions-index.json'),new SessionDatabase(dir));
+  try{chmodSync(fallbackDir,0o500);const scan=await index.scan(root);expect(scan.events).toHaveLength(1);expect(scan.warnings.join(' ')).toContain('SQLite remains authoritative');chmodSync(fallbackDir,0o700);expect((await index.scan(root)).events).toHaveLength(1);}finally{chmodSync(fallbackDir,0o700);index.close();}
+ }finally{rmSync(dir,{recursive:true,force:true});}});
 });

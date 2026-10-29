@@ -91,6 +91,7 @@ node -e "require('node:sqlite'); console.log('node:sqlite available')"
 Node 20 does not provide this module in the supported CI environment and cannot run the SQLite maintenance operation. It remains supported by the extension through the JSON fallback.
 
 Choose a new backup directory outside extension storage and `~/.codex`. The command refuses an existing directory and writes the backup, manifest, and plan with private permissions.
+It also refuses to place a private backup or plan inside the source repository. JSON mode is refused if `insights.sqlite` exists in the target storage directory; a mixed storage directory must be reviewed separately rather than resetting only one of its stores.
 
 ```bash
 npm run reset:history:execute -- prepare \
@@ -103,6 +104,7 @@ npm run reset:history:execute -- prepare \
 ```
 
 Preparation performs no token reset. It creates a SQLite backup through the SQLite backup API, copies fallback state, runs `PRAGMA integrity_check`, hashes every backup file, builds the cutover baseline, and prints the plan ID and current affected totals. Review those totals before authorizing execution.
+For SQLite mode, preparation refuses a JSON fallback that contains token events or observations absent from the SQLite snapshot. Execution also checks that the backed-up JSON sidecars have not changed. This prevents a reset from silently discarding data that the SQLite-only dry-run did not count.
 
 ## Explicit execution
 
@@ -126,11 +128,12 @@ The command:
 3. acquires a private maintenance lock respected by session and quota writers;
 4. verifies all backup hashes and SQLite integrity;
 5. revalidates the complete plan against live storage and every current JSONL source;
-6. stages the fallback state and replaces SQLite token tables in one transaction;
+6. commits the staged fallback state before replacing SQLite token tables in one transaction, so a crash before that transaction leaves the old SQLite data authoritative;
 7. verifies zero token events, retained baseline observations/checkpoints, and an unchanged quota digest;
 8. rescans sources before success; any detected change causes restoration from the verified backup.
 
 SQLite and JSON cannot share one filesystem transaction. The staged fallback plus automatic restoration provides rollback across the two stores. A persistent backup remains after success.
+If automatic restoration itself fails, the maintenance lock remains in place to prevent extension writes to a potentially mixed state. Keep VS Code closed and recover from the verified backup before removing that lock manually.
 
 ## Restoration
 

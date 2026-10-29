@@ -109,6 +109,32 @@ describe('cumulative usage lineage', () => {
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 
+  it('counts only the increment after a rewritten file replays its former counter head',async()=>{const f=env();try{
+    writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:00:00Z'),usage(150,'2026-01-01T00:01:00Z')));
+    const index=new SessionIndex(f.state);try{expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(150);
+      writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:02:00Z'),usage(150,'2026-01-01T00:03:00Z'),usage(170,'2026-01-01T00:04:00Z')));
+      expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(170);
+      expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(170);
+    }finally{index.close();}
+  }finally{rmSync(f.dir,{recursive:true,force:true});}});
+
+  it('does not invent a delta when a rewritten sequence skips the former head',async()=>{const f=env();try{
+    writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:00:00Z'),usage(150,'2026-01-01T00:01:00Z')));
+    const index=new SessionIndex(f.state);try{await index.scan(f.root);
+      writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:02:00Z'),usage(200,'2026-01-01T00:03:00Z')));
+      const scan=await index.scan(f.root);expect(aggregate(scan.events).total.inputTokens).toBe(150);expect(scan.warnings.join(' ')).toContain('did not replay its prior counter head');
+      appendFileSync(f.file('rollout'),usage(220,'2026-01-01T00:04:00Z')+'\n');expect(aggregate((await index.scan(f.root)).events).total.inputTokens).toBe(170);
+    }finally{index.close();}
+  }finally{rmSync(f.dir,{recursive:true,force:true});}});
+
+  it('preserves typed last usage when a rewritten sequence skips the former head',async()=>{const f=env();try{
+    writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:00:00Z'),usage(150,'2026-01-01T00:01:00Z')));
+    const index=new SessionIndex(f.state);try{await index.scan(f.root);
+      writeFileSync(f.file('rollout'),line(meta('thread'),usage(100,'2026-01-01T00:02:00Z'),usage(200,'2026-01-01T00:03:00Z',0,50)));
+      const scan=await index.scan(f.root);expect(aggregate(scan.events).total.inputTokens).toBe(200);expect(scan.warnings.join(' ')).toContain('did not replay its prior counter head');
+    }finally{index.close();}
+  }finally{rmSync(f.dir,{recursive:true,force:true});}});
+
   it('does not add a rewritten cumulative sequence when timestamps and item IDs change', async () => {
     const f = env();
     try {

@@ -26,6 +26,8 @@ interface TokenTotals {
   cached: number;
   reasoning: number;
 }
+interface ReplayBoundary {sessionId:string;totals:TokenTotals}
+const sameTotals=(a:TokenTotals,b:TokenTotals)=>a.input===b.input&&a.output===b.output&&a.cached===b.cached&&a.reasoning===b.reasoning;
 
 function totalsKey(session: string, value: TokenTotals): string {
   return JSON.stringify([session, value.input, value.output, value.cached, value.reasoning]);
@@ -72,6 +74,12 @@ interface ParserState {
   lastTimestamp?: number;
   // Set only by an explicitly reviewed local-history cutover baseline.
   cutoverBaseline?: boolean;
+  // A prefix signature checked even when stat metadata is unchanged. Older
+  // checkpoints are primed without interpreting their historical bytes again.
+  sourceSignature?: string;
+  // Additional rewrite signal when size, mtime, inode and the sampled prefix
+  // appear unchanged. Node's ctime semantics vary across filesystems.
+  sourceCtimeMs?: number;
 }
 
 export interface ScanMetrics {
@@ -156,8 +164,9 @@ export class DefaultSessionSource implements SessionSource {
   }
 }
 
-function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+function numberValue(value: unknown): number | undefined {
+  if (value === undefined || value === null) return 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function timestampValue(value: unknown): number | undefined {
@@ -171,7 +180,7 @@ function timestampValue(value: unknown): number | undefined {
   return undefined;
 }
 
-function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
+function totalsOf(record: Record<string, unknown>): TokenTotals | 'invalid' | undefined {
   const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
   if (record.type !== 'event_msg' || payload.type !== 'token_count') return undefined;
   const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
@@ -186,20 +195,22 @@ function totalsOf(record: Record<string, unknown>): TokenTotals | undefined {
   const output = numberValue(data.output_tokens ?? data.output);
   const cached = numberValue(data.cached_input_tokens ?? data.cached_input ?? data.cache_read_input_tokens);
   const reasoning = numberValue(data.reasoning_output_tokens ?? data.reasoning);
+  if (input === undefined || output === undefined || cached === undefined || reasoning === undefined || cached > input || reasoning > output) return 'invalid';
   if (input === 0 && output === 0 && cached === 0 && reasoning === 0) {
     return undefined;
   }
   return { input, output, cached, reasoning };
 }
 
-function lastUsageOf(record: Record<string, unknown>): TokenTotals | undefined {
+function lastUsageOf(record: Record<string, unknown>): TokenTotals | 'invalid' | undefined {
   const payload = record.payload && typeof record.payload === 'object' ? record.payload as Record<string, unknown> : {};
   const info = payload.info && typeof payload.info === 'object' ? payload.info as Record<string, unknown> : {};
   const raw = info.last_token_usage;
   if (!raw || typeof raw !== 'object') return undefined;
   const usage = raw as Record<string, unknown>;
-  const fields = [usage.input_tokens, usage.output_tokens, usage.cached_input_tokens, usage.reasoning_output_tokens];
-  if (fields.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) return undefined;
+  const fields = [usage.input_tokens, usage.output_tokens, usage.cached_input_tokens ?? 0, usage.reasoning_output_tokens ?? 0];
+  if (fields.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)) return 'invalid';
+  if ((fields[2] as number) > (fields[0] as number) || (fields[3] as number) > (fields[1] as number)) return 'invalid';
   return { input: fields[0] as number, output: fields[1] as number, cached: fields[2] as number, reasoning: fields[3] as number };
 }
 
@@ -253,12 +264,13 @@ function stableEventId(sourceFile: string, lineOffset: number, record: Record<st
   return createHash('sha256').update(sourceFile).update(':').update(String(lineOffset)).update(':').update(JSON.stringify(record)).digest('hex').slice(0, 24);
 }
 
-function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number, known: CounterLookup = new CounterLookup(), maxLineBytes = MAX_LINE_BYTES): ParseResult {
+function parseSessionBuffer(content: Buffer, sourceFile: string, previous: ParserState, baseOffset: number, known: CounterLookup = new CounterLookup(), maxLineBytes = MAX_LINE_BYTES, replayBoundary?:ReplayBoundary): ParseResult {
   const state: ParserState = { ...previous, lastTotals: previous.lastTotals ? { ...previous.lastTotals } : undefined };
   const events: UsageEvent[] = [];
   const observations: CounterObservation[] = [];
   const local = new CounterLookup();
   const warnings: string[] = [];
+  let replayReachedBoundary=false;
   let cursor = 0;
   let confirmedBytes = 0;
 
@@ -304,6 +316,10 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     state.project = projectOf(record) ?? state.project;
     state.model = modelOf(record) ?? state.model;
     const totals = totalsOf(record);
+    if (totals === 'invalid') {
+      warnings.push('Skipped invalid usage counters in ' + path.basename(sourceFile) + '.');
+      continue;
+    }
     if (!totals) {
       continue;
     }
@@ -315,7 +331,12 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     const sourceTimestamp = timestampValue(record.timestamp ?? record.created_at ?? record.time);
     const timestamp = sourceTimestamp ?? Date.now();
     const currentSession = state.canonicalSessionId ?? state.sessionId ?? createHash('sha256').update(sourceFile).digest('hex').slice(0, 16);
-    const last = lastUsageOf(record);
+    const replayingSameSession=replayBoundary?.sessionId===currentSession;
+    if(replayingSameSession&&sameTotals(totals,replayBoundary.totals))replayReachedBoundary=true;
+    const lastValue = lastUsageOf(record);
+    const invalidLast = lastValue === 'invalid';
+    const last = invalidLast ? undefined : lastValue;
+    if (invalidLast) warnings.push('Invalid last-usage counters in ' + path.basename(sourceFile) + '; they were not used.');
     const observationKey = createHash('sha256').update(JSON.stringify([currentSession, sourceTimestamp ?? `${sourceFile}:${lineOffset}`, totals, last])).digest('hex');
     const duplicate = known.hasKey(observationKey) || local.hasKey(observationKey);
     const sameCounter = known.hasTotal(currentSession, totals) || local.hasTotal(currentSession, totals);
@@ -324,24 +345,32 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
     const existingThread = known.hasSession(currentSession) || local.hasSession(currentSession);
     let decision: CounterObservation['decision'] = 'counted';
     let delta = totals;
+    let preserveCounterState = false;
     if (state.lastTotals) {
       if (state.lastTimestamp !== undefined && timestamp < state.lastTimestamp) {
-        warnings.push('Skipped out-of-order cumulative usage in ' + path.basename(sourceFile) + '.');
-        continue;
+        warnings.push('Out-of-order cumulative usage in ' + path.basename(sourceFile) + '; the counter sequence was checked.');
       }
       const decreased = totals.input < state.lastTotals.input || totals.output < state.lastTotals.output || totals.cached < state.lastTotals.cached || totals.reasoning < state.lastTotals.reasoning;
       if (decreased && state.lastTimestamp !== undefined && timestamp <= state.lastTimestamp) {
-        warnings.push('Skipped ambiguous cumulative counter decrease in ' + path.basename(sourceFile) + '.');
-        continue;
+        decision = 'ambiguous';
+        delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+        preserveCounterState = true;
+        warnings.push('Ambiguous out-of-order cumulative counter decrease in ' + path.basename(sourceFile) + '; no usage was inferred.');
+      } else if (decreased && (invalidLast || (last && (last.input > totals.input || last.output > totals.output || last.cached > totals.cached || last.reasoning > totals.reasoning)))) {
+        decision = 'ambiguous';
+        delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+        preserveCounterState = true;
+        warnings.push('Invalid last-usage counters on a counter reset in ' + path.basename(sourceFile) + '; no usage was inferred.');
+      } else {
+        delta = decreased
+          ? last ?? totals
+          : {
+              input: totals.input - state.lastTotals.input,
+              output: totals.output - state.lastTotals.output,
+              cached: totals.cached - state.lastTotals.cached,
+              reasoning: totals.reasoning - state.lastTotals.reasoning,
+            };
       }
-      delta = decreased
-        ? last ?? totals
-        : {
-            input: totals.input - state.lastTotals.input,
-            output: totals.output - state.lastTotals.output,
-            cached: totals.cached - state.lastTotals.cached,
-            reasoning: totals.reasoning - state.lastTotals.reasoning,
-          };
     } else if (inheritedFromParent) {
       decision = copiedParentObservation ? 'inherited' : 'ambiguous';
       delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
@@ -368,6 +397,17 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
       decision = 'ambiguous';
       delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
       warnings.push('Ambiguous fork baseline in ' + path.basename(sourceFile) + '; no usage was inferred.');
+    } else if (invalidLast) {
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Unverified initial usage with invalid last counters in ' + path.basename(sourceFile) + '; no usage was inferred.');
+    } else if (state.cutoverBaseline && !existingThread && !last) {
+      // A rewritten cutover file can now contain a different conversation.
+      // Its first cumulative total has no proven relationship to the reset
+      // baseline, so retain the observation without inventing fresh spend.
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Unverified first counter in a rewritten reset source ' + path.basename(sourceFile) + '; no usage was inferred.');
     } else if (!existingThread && last &&
       (last.input < totals.input || last.output < totals.output || last.cached < totals.cached || last.reasoning < totals.reasoning)) {
       // No prior source is available. Only the last call is demonstrably new;
@@ -375,6 +415,11 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
       decision = 'ambiguous';
       delta = last;
       warnings.push('Unverified initial cumulative baseline in ' + path.basename(sourceFile) + '; only last usage was counted.');
+    }
+    if ((state.cutoverBaseline||replayingSameSession) && known.hasTotal(currentSession, totals)) {
+      decision = 'ambiguous';
+      delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
+      warnings.push('Rewritten reset source repeats a prior cumulative counter in ' + path.basename(sourceFile) + '; no usage was inferred.');
     }
     if (duplicate) {
       decision = 'duplicate';
@@ -388,11 +433,20 @@ function parseSessionBuffer(content: Buffer, sourceFile: string, previous: Parse
       delta = { input: 0, output: 0, cached: 0, reasoning: 0 };
       warnings.push('Ambiguous repeated cumulative observation in ' + path.basename(sourceFile) + '; no usage was inferred.');
     }
+    if(replayingSameSession&&!replayReachedBoundary&&!known.hasTotal(currentSession,totals)&&!duplicate){
+      // Rewritten bytes have not replayed the former head. A newer cumulative
+      // value can include a divergent branch; only typed last usage is safe.
+      decision='ambiguous';
+      delta=last&&!invalidLast&&last.input<=totals.input&&last.output<=totals.output&&last.cached<=totals.cached&&last.reasoning<=totals.reasoning?last:{input:0,output:0,cached:0,reasoning:0};
+      warnings.push('Rewritten session did not replay its prior counter head in '+path.basename(sourceFile)+'; only proven last usage was counted.');
+    }
     const observation: CounterObservation = { id: stableEventId(sourceFile, lineOffset, record), key: observationKey, sourceFile, sessionId: currentSession, parentSessionId: state.parentSessionId, timestamp: new Date(timestamp).toISOString(), input: totals.input, output: totals.output, cached: totals.cached, reasoning: totals.reasoning, lastInput: last?.input, lastOutput: last?.output, lastCached: last?.cached, lastReasoning: last?.reasoning, decision };
     observations.push(observation);
     local.add(observation);
-    state.lastTotals = totals;
-    state.lastTimestamp = timestamp;
+    if (!preserveCounterState) {
+      state.lastTotals = totals;
+      state.lastTimestamp = Math.max(state.lastTimestamp ?? timestamp, timestamp);
+    }
     if (delta.input === 0 && delta.output === 0 && delta.cached === 0 && delta.reasoning === 0) {
       continue;
     }
@@ -461,9 +515,11 @@ export async function buildCutoverEntry(filePath: string): Promise<CutoverEntryR
     warnings.push(...parsed.warnings); state = parsed.state; carry = parsed.partial; position += chunk.length;
   }
   const after = await fs.stat(filePath);
-  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || identityOf(after) !== identityOf(before)) throw new Error('File changed while its cutover baseline was built.');
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || identityOf(after) !== identityOf(before)) throw new Error('File changed while its cutover baseline was built.');
   const prefix = await readRange(filePath, 0, Math.min(before.size, SAMPLE_BYTES));
   state.cutoverBaseline = true;
+  state.sourceSignature = generationOf(prefix);
+  state.sourceCtimeMs = after.ctimeMs;
   return { bytesRead: before.size + prefix.length, warnings, entry: indexedFile({ size: before.size, mtimeMs: before.mtimeMs,
     offset: before.size - carry.length, identity: identityOf(before) ?? null, generation: generationOf(prefix), parserState: encodeState(state),
     partial: carry.toString('base64'), parserVersion: SESSION_PARSER_VERSION, lastReadAt: Date.now(), events: [], observations }) };
@@ -572,6 +628,7 @@ export class SessionIndex {
   private readonly loadWarnings: string[] = [];
   private legacyCounters?: CounterObservation[];
   private qualitySummary?: { legacyUnverified: number; ambiguous: number };
+  private sortedEvents?: UsageEvent[];
   private survivingSourceFiles = new Set<string>();
   private readonly database: SessionDatabase;
 
@@ -669,6 +726,43 @@ export class SessionIndex {
       warnings.push('Session file scan limit (' + this.source.maxFiles + ') reached; additional files may not be indexed.');
     }
     const next = new Map(this.cache);
+    // Establish a deterministic chronology for changed files. The
+    // inherited first counter must not become the starting point only because
+    // a continuation filename sorts before its parent.
+    const newTimes = new Map<string, number>();
+    const prefetched = new Map<string, FirstUsageResult>();
+    const changedFiles: string[] = [];
+    const unchangedFiles = new Set<string>();
+    const signatures = new Map<string, string>();
+    for (const file of files) {
+      try {
+        const stat = await fs.stat(file);
+        const prior = next.get(file);
+        if (prior && stat.size === prior.size && stat.mtimeMs === prior.mtimeMs && (!prior.identity || !identityOf(stat) || prior.identity === identityOf(stat))) {
+          // Compare only bytes that belonged to the committed generation.
+          // An append to a small file must not change its prior prefix hash.
+          const sample = await readRange(file, 0, Math.min(prior.size, SAMPLE_BYTES));
+          metrics.bytesRead += sample.length;
+          const signature = generationOf(sample);
+          signatures.set(file, signature);
+          const state = decodeState(prior.parserState);
+          if (prior.parserVersion === SESSION_PARSER_VERSION && state.sourceSignature === signature && (state.sourceCtimeMs===undefined||state.sourceCtimeMs===stat.ctimeMs)) {
+            unchangedFiles.add(file);
+            continue;
+          }
+          // v0.4.4 checkpoints may contain a signature of the last imported
+          // tail instead of the source prefix. Prime those without replaying
+          // historical bytes. A reset baseline always records the prefix.
+          if (!state.sourceSignature && (!state.cutoverBaseline || prior.generation === signature)) continue;
+        }
+        changedFiles.push(file);
+      } catch { /* The import loop reports the file error. */ }
+    }
+    if(changedFiles.length===0&&unchangedFiles.size===files.length){
+      metrics.filesInspected=files.length;
+      this.survivingSourceFiles=new Set(files);
+      return this.result(warnings,metrics,started);
+    }
     if (!this.legacyCounters) {
       this.legacyCounters = [];
       for (const [file, entry] of next) {
@@ -684,20 +778,6 @@ export class SessionIndex {
       }
     }
     const known = new CounterLookup([...this.legacyCounters, ...[...next.values()].flatMap((entry) => entry.observations ?? [])]);
-    // Establish a deterministic chronology for changed files. The
-    // inherited first counter must not become the starting point only because
-    // a continuation filename sorts before its parent.
-    const newTimes = new Map<string, number>();
-    const prefetched = new Map<string, FirstUsageResult>();
-    const changedFiles: string[] = [];
-    for (const file of files) {
-      try {
-        const stat = await fs.stat(file);
-        const prior = next.get(file);
-        if (prior && stat.size === prior.size && stat.mtimeMs === prior.mtimeMs && (!prior.identity || !identityOf(stat) || prior.identity === identityOf(stat))) continue;
-        changedFiles.push(file);
-      } catch { /* The import loop reports the file error. */ }
-    }
     for (const file of changedFiles.length > 1 ? changedFiles : []) {
       try {
         const stat = await fs.stat(file);
@@ -713,6 +793,10 @@ export class SessionIndex {
     for (const file of files) {
       metrics.filesInspected += 1;
       try {
+        if (unchangedFiles.has(file)) {
+          survivingSourceFiles.add(file);
+          continue;
+        }
         const stat = await fs.stat(file);
         const prior = this.cache.get(file);
         const cutoverBaseline = prior ? decodeState(prior.parserState).cutoverBaseline === true : false;
@@ -722,7 +806,7 @@ export class SessionIndex {
           }
           continue;
         }
-        const imported = await this.importFile(file, stat, prior, known, prefetched.get(file));
+        const imported = await this.importFile(file, stat, prior, known, prefetched.get(file), signatures.get(file));
         if (!imported) {
           survivingSourceFiles.add(file);
           continue;
@@ -752,14 +836,19 @@ export class SessionIndex {
     }
     this.survivingSourceFiles = survivingSourceFiles;
     if (changed) {
-      this.persistFallback(next);
+      try {
+        this.persistFallback(next);
+      } catch (error) {
+        if (!this.database.available) throw error;
+        warnings.push('JSON session fallback could not be updated; SQLite remains authoritative.');
+      }
     }
     this.cache = next;
-    if (changed) this.qualitySummary = undefined;
+    if (changed) {this.qualitySummary = undefined;this.sortedEvents=undefined;}
     return this.result(warnings, metrics, started);
   }
 
-  private async importFile(file: string, stat: import('node:fs').Stats, prior: IndexedFile | undefined, known: CounterLookup, prefetch?: FirstUsageResult): Promise<FileImportResult | undefined> {
+  private async importFile(file: string, stat: import('node:fs').Stats, prior: IndexedFile | undefined, known: CounterLookup, prefetch?: FirstUsageResult, checkedSignature?: string): Promise<FileImportResult | undefined> {
     const identity = identityOf(stat);
     let reconcile = !prior || prior.parserVersion !== SESSION_PARSER_VERSION || stat.size < prior.offset;
     if (prior && identity && prior.identity && identity !== prior.identity) {
@@ -768,18 +857,30 @@ export class SessionIndex {
     if (prior && stat.size === prior.size && stat.mtimeMs !== prior.mtimeMs) {
       reconcile = true;
     }
-    if (!reconcile && prior && !identity && prior.generation) {
-      const sample = await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES));
-      if (generationOf(sample) !== prior.generation) {
-        reconcile = true;
-      }
+    let signatureBytesRead = 0;
+    let priorPrefix:Buffer|undefined;
+    let signature = checkedSignature;
+    if (prior && !signature) {
+      priorPrefix = await readRange(file, 0, Math.min(prior.size, SAMPLE_BYTES));
+      signatureBytesRead = priorPrefix.length;
+      signature = generationOf(priorPrefix);
     }
+    const priorState = prior ? decodeState(prior.parserState) : undefined;
+    const prefixChanged = !!priorState?.sourceSignature && signature !== priorState.sourceSignature;
+    const cutoverPrefixChanged = !!priorState?.cutoverBaseline && !priorState.sourceSignature && !!prior?.generation && signature !== prior.generation;
+    const metadataRewrite=!!prior&&stat.size===prior.size&&stat.mtimeMs===prior.mtimeMs&&priorState?.sourceCtimeMs!==undefined&&stat.ctimeMs!==priorState.sourceCtimeMs;
+    if (prefixChanged || cutoverPrefixChanged || metadataRewrite) reconcile = true;
     if (!reconcile && prior && stat.size === prior.size && stat.mtimeMs === prior.mtimeMs) {
-      return undefined;
+      if (priorState?.sourceSignature&&priorState.sourceCtimeMs!==undefined) return undefined;
+      // Upgrade an older checkpoint without reparsing or changing token data.
+      const parserState = encodeState({ ...priorState, sourceSignature: signature, sourceCtimeMs:stat.ctimeMs });
+      const fileState = { ...prior, parserState };
+      return { file: fileState, update: { file, checkpoint: checkpoint(fileState), events: [], observations: [] },
+        metrics: { bytesRead: signatureBytesRead, eventsNew: 0, eventsDeduplicated: 0, parseErrors: 0 }, warnings: [] };
     }
 
     const start = reconcile ? 0 : prior?.offset ?? 0;
-    const previousState = reconcile ? initialState() : decodeState(prior?.parserState);
+    const previousState = reconcile ? { ...initialState(), cutoverBaseline: priorState?.cutoverBaseline } : decodeState(prior?.parserState);
     let metadataBytesRead = 0;
     const identityWarnings: string[] = [];
     if (prior && !reconcile && !previousState.metadataChecked && !previousState.canonicalSessionId) {
@@ -796,12 +897,22 @@ export class SessionIndex {
     }
     const reused = prefetch?.data && prefetch.offset === start && prefetch.size === stat.size && prefetch.mtimeMs === stat.mtimeMs && prefetch.identity === identity && prefetch.data.length === stat.size - start;
     const data = reused ? prefetch.data as Buffer : await readRange(file, start, stat.size - start);
-    const generationData = !identity && !reconcile ? await readRange(file, 0, Math.min(stat.size, SAMPLE_BYTES)) : data;
+    // The old prefix and newly read tail already cover the new signature.
+    // Avoid reading the entire small JSONL a second time on every append.
+    let generationBytesRead=0;
+    let generationData:Buffer;
+    if(start===0)generationData=data.subarray(0,Math.min(stat.size,SAMPLE_BYTES));
+    else if(priorPrefix&&start<=priorPrefix.length)generationData=Buffer.concat([priorPrefix.subarray(0,start),data.subarray(0,Math.max(0,Math.min(stat.size,SAMPLE_BYTES)-start))]);
+    else if(priorPrefix&&priorPrefix.length===SAMPLE_BYTES)generationData=priorPrefix;
+    else{generationData=await readRange(file,0,Math.min(stat.size,SAMPLE_BYTES));generationBytesRead=generationData.length;}
     const afterRead = await fs.stat(file);
-    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs || identityOf(afterRead) !== identity) {
+    if (afterRead.size !== stat.size || afterRead.mtimeMs !== stat.mtimeMs || afterRead.ctimeMs !== stat.ctimeMs || identityOf(afterRead) !== identity) {
       throw new Error('File changed during import; checkpoint was not advanced.');
     }
-    const parser = parseSessionBuffer(data, file, previousState, start, known);
+    const boundary=reconcile&&priorState?.canonicalSessionId&&priorState.lastTotals?{sessionId:priorState.canonicalSessionId,totals:priorState.lastTotals}:undefined;
+    const parser = parseSessionBuffer(data, file, previousState, start, known, MAX_LINE_BYTES, boundary);
+    parser.state.sourceSignature = generationOf(generationData);
+    parser.state.sourceCtimeMs = afterRead.ctimeMs;
     const offset = start + parser.confirmedBytes;
     const sourceEvents = reconcile ? prior?.events ?? [] : prior?.events ?? [];
     const existingFingerprints = new Set(sourceEvents.map((event) => event.fingerprint));
@@ -832,7 +943,7 @@ export class SessionIndex {
       archiveFile,
       warnings: [...identityWarnings, ...parser.warnings],
       metrics: {
-        bytesRead: (reused ? 0 : data.length) + (generationData === data ? 0 : generationData.length) + metadataBytesRead,
+        bytesRead: (reused ? 0 : data.length) + generationBytesRead + signatureBytesRead + metadataBytesRead,
         eventsNew: accepted.length,
         eventsDeduplicated: deduplicated,
         parseErrors: parser.warnings.filter((warning) => warning.includes('invalid JSONL')).length,
@@ -849,6 +960,7 @@ export class SessionIndex {
   private persistFallback(cache: Map<string, IndexedFile>): void {
     assertStorageUnlocked(path.dirname(this.source.stateFile));
     if (!this.fallbackWritable) {
+      if (!this.database.available) throw new Error('JSON session fallback is invalid and SQLite is unavailable; token updates were not persisted.');
       return;
     }
     const serializable = [...cache].map(([file, entry]) => ({ file, ...entry }));
@@ -860,8 +972,6 @@ export class SessionIndex {
   }
 
   private result(warnings: string[], metrics: ScanMetrics, started: number): SessionScanResult {
-    metrics.durationMs = performance.now() - started;
-    const events: UsageEvent[] = [];
     if (!this.qualitySummary) {
       let legacyUnverified = 0;
       let ambiguous = 0;
@@ -872,14 +982,16 @@ export class SessionIndex {
       }
       this.qualitySummary = { legacyUnverified, ambiguous };
     }
-    for (const entry of this.cache.values()) {
-      for (const event of entry.events) {
-        events.push(event);
-      }
+    if(!this.sortedEvents){
+      this.sortedEvents=[];
+      for(const entry of this.cache.values())for(const event of entry.events)this.sortedEvents.push(event);
+      this.sortedEvents.sort((left,right)=>Date.parse(left.timestamp)-Date.parse(right.timestamp));
     }
     if (this.qualitySummary.legacyUnverified > 0) warnings.push('Legacy token history has not been reconciled; totals may include inherited cumulative counters.');
     if (this.qualitySummary.ambiguous > 0) warnings.push('Some cumulative token observations remain ambiguous; shown totals are conservative.');
-    return { filesScanned: metrics.filesInspected, events: events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)), warnings: [...new Set(warnings)], metrics };
+    const result={filesScanned:metrics.filesInspected,events:this.sortedEvents.slice(),warnings:[...new Set(warnings)],metrics};
+    metrics.durationMs=performance.now()-started;
+    return result;
   }
 
   private safeError(error: unknown): string {

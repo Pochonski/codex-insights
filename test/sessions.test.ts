@@ -44,4 +44,21 @@ describe('Codex token collector',()=>{
   const parsed=parseSessionDetailed([record('2026-10-15T10:00:00Z',100),'{"broken"',record('2026-10-15T09:59:00Z',10),record('2026-10-15T10:01:00Z',130)].join('\n'),'ordered.jsonl');
   expect(parsed.events.map(event=>event.inputTokens)).toEqual([100,30]);expect(parsed.warnings.join(' ')).toContain('invalid');expect(parsed.warnings.join(' ')).toContain('out-of-order');
  });
+ it('retains a growing cumulative observation even when its timestamp moves backward',()=>{
+  const record=(at:string,n:number)=>JSON.stringify({timestamp:at,type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:n,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
+  const parsed=parseSessionDetailed([record('2026-10-15T10:00:00Z',100),record('2026-10-15T09:59:00Z',150),record('2026-10-15T10:01:00Z',170)].join('\n'),'ordered.jsonl');
+  expect(parsed.events.map(event=>event.inputTokens)).toEqual([100,50,20]);
+ });
+ it('does not count fractional, unsafe, or internally impossible usage totals',()=>{
+  const record=(input:number,cached=0)=>JSON.stringify({type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:input,output_tokens:0,cached_input_tokens:cached,reasoning_output_tokens:0}}}});
+  const parsed=parseSessionDetailed([record(0.5),record(1e20),record(10,11),record(12,4)].join('\n'),'invalid.jsonl');
+  expect(parsed.events.map(event=>event.inputTokens)).toEqual([12]);
+  expect(parsed.warnings.join(' ')).toContain('invalid usage');
+ });
+ it('does not count a contradictory last usage when cumulative counters reset',()=>{
+  const record=(at:string,total:number,last:number)=>JSON.stringify({timestamp:at,type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:total,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0},last_token_usage:{input_tokens:last,output_tokens:0,cached_input_tokens:0,reasoning_output_tokens:0}}}});
+  const parsed=parseSessionDetailed([record('2026-10-15T10:00:00Z',100,100),record('2026-10-15T10:01:00Z',20,100)].join('\n'),'reset.jsonl');
+  expect(parsed.events.map(event=>event.inputTokens)).toEqual([100]);
+  expect(parsed.warnings.join(' ')).toContain('Invalid last-usage');
+ });
 });
