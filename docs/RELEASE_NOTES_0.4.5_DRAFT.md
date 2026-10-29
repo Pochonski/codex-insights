@@ -24,7 +24,7 @@
 - Local preparation build: `npm ci`, typecheck, **181/181** unit and integration tests, build, isolated VS Code 1.90 Electron E2E, packaging and sensitive-file scan passed.
 - `npm audit --audit-level=moderate` reported **0 vulnerabilities**. The 0.4.5 VSIX has 14 archive entries, includes the compiled Extension Host and both React bundles, and excludes maintenance scripts, E2E fixtures and private data.
 - Historical audit `--repair` and `--apply`, and read-only reset CLI `--repair` and `--apply`, each exited with the expected blocked status in a no-input check.
-- Node 20/22 and Electron CI on the preparation PR: pending.
+- Preparation PR CI: Node 22 passed 181 tests; Node 20 passed 161 and skipped 20 SQLite-dependent tests because `node:sqlite` is unavailable there; isolated Electron E2E passed. Packaging, scan and audit passed on both Node jobs.
 - Manual regular-profile hover, quota, history and restart QA: pending user review. The preparation task did not install the VSIX into a personal profile.
 
 ## Known limits
