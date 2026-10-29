@@ -1,7 +1,10 @@
 import {describe,expect,it} from 'vitest';
-import {appendFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {appendFileSync,chmodSync,existsSync,mkdirSync,mkdtempSync,readFileSync,renameSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
+import {build} from 'esbuild';
 import {aggregate} from '../src/analytics/aggregate';
 import {SessionIndex} from '../src/collectors/sessions';
 import {summarizeHistoricalIntegrity} from '../src/reconciliation/dashboard-summary';
@@ -47,6 +50,113 @@ describe('explicit local token reset executor',()=>{
   writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();const before=await readSqliteSnapshot(f.db),fallback=readFileSync(f.state,'utf8'),{plan,backup}=await prepareFor(f,'sqlite','rollback-backup');
   await expect(executeLocalHistoryReset({plan,storageDirectory:f.storage,stateFile:f.state,sources:f.sessions,backupDirectory:backup,confirmation:RESET_CONFIRMATION,confirmedPlanId:plan.planId,assertWritersStopped:async()=>{},failureInjection:point=>{if(point==='after-storage')throw new Error('synthetic interruption');}})).rejects.toThrow('synthetic interruption');expect((await readSqliteSnapshot(f.db)).events).toEqual(before.events);expect(readFileSync(f.state,'utf8')).toBe(fallback);expect(existsSync(maintenanceLockPath(f.storage))).toBe(false);
  }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('rejects JSON reset when SQLite also exists, including restoration',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const original=await readSqliteSnapshot(f.db);
+  await expect(prepareFor(f,'json','mixed-backup')).rejects.toThrow(/SQLite.*JSON|JSON.*SQLite/i);
+  expect((await readSqliteSnapshot(f.db)).events).toEqual(original.events);
+  const other=env();try{
+   writeFileSync(other.state,readFileSync(f.state));const {backup}=await prepareFor(other,'json','json-backup');
+   await expect(restoreVerifiedLocalResetBackup(backup,f.storage,f.state)).rejects.toThrow(/SQLite.*JSON|JSON.*SQLite/i);
+   expect((await readSqliteSnapshot(f.db)).events).toEqual(original.events);
+  }finally{rmSync(other.root,{recursive:true,force:true});}
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('keeps SQLite authoritative until the zero-file fallback is committed',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  rmSync(f.file('base'));const {plan,backup}=await prepareFor(f,'sqlite','zero-files-backup');
+  await expect(executeLocalHistoryReset({plan,storageDirectory:f.storage,stateFile:f.state,sources:f.sessions,backupDirectory:backup,confirmation:RESET_CONFIRMATION,confirmedPlanId:plan.planId,assertWritersStopped:async()=>{},failureInjection:point=>{
+   if(point==='after-fallback'){
+    const db=require('node:sqlite').DatabaseSync;const connection=new db(f.db,{readOnly:true});
+    try{expect(connection.prepare('SELECT COUNT(*) AS count FROM token_events').get().count).toBe(1);}finally{connection.close();}
+    expect(readJsonSnapshot(f.state).events).toHaveLength(0);throw new Error('synthetic pre-commit interruption');
+   }
+  }})).rejects.toThrow('synthetic pre-commit interruption');
+  expect((await readSqliteSnapshot(f.db)).events).toHaveLength(1);
+  await executeLocalHistoryReset({plan,storageDirectory:f.storage,stateFile:f.state,sources:f.sessions,backupDirectory:backup,confirmation:RESET_CONFIRMATION,confirmedPlanId:plan.planId,assertWritersStopped:async()=>{}});
+  expect((await readSqliteSnapshot(f.db)).events).toHaveLength(0);expect(readJsonSnapshot(f.state).events).toHaveLength(0);
+  const reopened=new SessionIndex(f.state);expect((await reopened.scan(f.sessions)).events).toHaveLength(0);reopened.close();
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('retains the lock and verified backup after an abrupt process exit at either reset boundary',async()=>{
+  for(const boundary of ['after-fallback','after-storage'] as const){const f=env();try{
+   writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));
+   const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+   const original=await readSqliteSnapshot(f.db),fallback=readFileSync(f.state,'utf8');
+   const {plan,backup}=await prepareFor(f,'sqlite','crash');
+   const bundle=path.join(f.root,'executor.mjs'),child=path.join(f.root,'crash.mjs');
+   await build({entryPoints:[path.resolve('src/reset/local-history-executor.ts')],bundle:true,platform:'node',format:'esm',target:'node22',outfile:bundle,logLevel:'silent'});
+   writeFileSync(child,`import {readFileSync} from 'node:fs';\nconst api=await import(process.argv[2]);\nconst plan=JSON.parse(readFileSync(process.argv[3],'utf8'));\nawait api.executeLocalHistoryReset({plan,storageDirectory:process.argv[4],stateFile:process.argv[5],sources:process.argv[6],backupDirectory:process.argv[7],confirmation:api.RESET_CONFIRMATION,confirmedPlanId:plan.planId,assertWritersStopped:async()=>{},failureInjection:point=>{if(point===process.argv[8])process.exit(77);}});\n`);
+   const childResult=spawnSync(process.execPath,[child,pathToFileURL(bundle).href,path.join(f.root,'crash.plan.json'),f.storage,f.state,f.sessions,backup,boundary],{encoding:'utf8',timeout:30_000});
+   expect(childResult.status,childResult.stderr).toBe(77);
+   expect(existsSync(maintenanceLockPath(f.storage))).toBe(true);
+   expect((await verifyLocalResetBackup(backup)).snapshotDigest).toBe(plan.snapshotDigest);
+   expect((await readSqliteSnapshot(f.db)).events).toHaveLength(boundary==='after-fallback'?1:0);
+   expect(readJsonSnapshot(f.state).events).toHaveLength(0);
+   const locked=new SessionIndex(f.state);try{const scan=await locked.scan(f.sessions);expect(scan.events).toHaveLength(0);expect(scan.warnings.join(' ')).toContain('locked');}finally{locked.close();}
+   if(boundary==='after-fallback'){
+    const manifestFile=path.join(backup,'manifest.json'),validManifest=readFileSync(manifestFile,'utf8');
+    const broken=JSON.parse(validManifest) as {snapshotDigest:string};broken.snapshotDigest='0'.repeat(64);writeFileSync(manifestFile,JSON.stringify(broken));
+    await expect(executeLocalHistoryRestore({backupDirectory:backup,storageDirectory:f.storage,stateFile:f.state,confirmation:RESTORE_CONFIRMATION,assertWritersStopped:async()=>{},recoverExistingLock:true})).rejects.toThrow('snapshot digest mismatch');
+    expect(existsSync(maintenanceLockPath(f.storage))).toBe(true);
+    writeFileSync(manifestFile,validManifest);
+   }
+   await executeLocalHistoryRestore({backupDirectory:backup,storageDirectory:f.storage,stateFile:f.state,confirmation:RESTORE_CONFIRMATION,assertWritersStopped:async()=>{},recoverExistingLock:true});
+   expect((await readSqliteSnapshot(f.db)).events).toEqual(original.events);
+   expect(readFileSync(f.state,'utf8')).toBe(fallback);
+   expect(existsSync(maintenanceLockPath(f.storage))).toBe(false);
+   expect(existsSync(maintenanceLockPath(f.storage)+'.recover')).toBe(false);
+   const reopened=new SessionIndex(f.state);try{expect((await reopened.scan(f.sessions)).events).toHaveLength(1);}finally{reopened.close();}
+  }finally{rmSync(f.root,{recursive:true,force:true});}}
+ });
+
+ sqliteIt('rejects a backup manifest that references files outside its directory',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const {backup}=await prepareFor(f,'sqlite','manifest-backup'),manifestFile=path.join(backup,'manifest.json');
+  const manifest=JSON.parse(readFileSync(manifestFile,'utf8')) as {files:{name:string}[]};manifest.files[0].name='../outside.sqlite';writeFileSync(manifestFile,JSON.stringify(manifest));
+  await expect(verifyLocalResetBackup(backup)).rejects.toThrow('Invalid reset backup manifest file');
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('rejects a backup whose manifest totals disagree with the verified files',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));
+  const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const {backup}=await prepareFor(f,'sqlite','digest-backup'),manifestFile=path.join(backup,'manifest.json');
+  const manifest=JSON.parse(readFileSync(manifestFile,'utf8')) as {snapshotDigest:string;quotaDigest:string};
+  manifest.snapshotDigest='0'.repeat(64);writeFileSync(manifestFile,JSON.stringify(manifest));
+  await expect(verifyLocalResetBackup(backup)).rejects.toThrow('snapshot digest mismatch');
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('rejects a SQLite reset when the JSON sidecar contains events absent from SQLite',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const entries=JSON.parse(readFileSync(f.state,'utf8')) as {events:unknown[]}[];entries[0].events.push({id:'json-only',sessionId:'thread',timestamp:'2026-01-01T00:01:00Z',inputTokens:50,outputTokens:0,cachedInputTokens:0,reasoningOutputTokens:0});writeFileSync(f.state,JSON.stringify(entries));
+  await expect(prepareFor(f,'sqlite','diverged-backup')).rejects.toThrow('absent from SQLite');expect((await readSqliteSnapshot(f.db)).events).toHaveLength(1);
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('rejects a storage sidecar symlink before preparing any reset plan',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));
+  const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const external=path.join(f.root,'external-state.json');renameSync(f.state,external);symlinkSync(external,f.state);
+  await expect(prepareFor(f,'sqlite','symlink-backup')).rejects.toThrow('not a regular file');
+  expect(existsSync(maintenanceLockPath(f.storage))).toBe(false);
+  expect(readFileSync(external,'utf8')).toContain('events');
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('rejects a reset if a JSON sidecar changed after backup preparation',async()=>{const f=env();try{
+  writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();
+  const {plan,backup}=await prepareFor(f,'sqlite','sidecar-backup'),before=await readSqliteSnapshot(f.db);
+  writeFileSync(f.state,readFileSync(f.state,'utf8')+' ');
+  await expect(executeLocalHistoryReset({plan,storageDirectory:f.storage,stateFile:f.state,sources:f.sessions,backupDirectory:backup,confirmation:RESET_CONFIRMATION,confirmedPlanId:plan.planId,assertWritersStopped:async()=>{}})).rejects.toThrow('sidecar changed');
+  expect((await readSqliteSnapshot(f.db)).events).toEqual(before.events);
+ }finally{rmSync(f.root,{recursive:true,force:true});}});
+
+ sqliteIt('keeps the maintenance lock when restoring a backup fails partway through',async()=>{const f=env();const sidecar=path.join(f.storage,'sidecar');try{
+  mkdirSync(sidecar);const state=path.join(sidecar,'sessions-index.json');writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(state,new SessionDatabase(f.storage));await index.scan(f.sessions);index.close();
+  const backup=f.backup('restore-failure-backup');await prepareLocalHistoryReset({storageDirectory:f.storage,stateFile:state,sources:f.sessions,backupDirectory:backup,planFile:f.backup('restore-failure.plan.json'),storage:'sqlite',assertWritersStopped:async()=>{}});
+  rmSync(state);chmodSync(sidecar,0o500);
+  await expect(executeLocalHistoryRestore({backupDirectory:backup,storageDirectory:f.storage,stateFile:state,confirmation:RESTORE_CONFIRMATION,assertWritersStopped:async()=>{}})).rejects.toThrow();
+  expect(existsSync(maintenanceLockPath(f.storage))).toBe(true);
+ }finally{chmodSync(sidecar,0o700);rmSync(f.root,{recursive:true,force:true});}});
 
  sqliteIt('rejects stale plans, missing confirmation, active writers, and leaves storage unchanged',async()=>{const f=env();try{
   writeFileSync(f.file('base'),lines(meta('thread'),usage(100,'2026-01-01T00:00:00Z')));const index=new SessionIndex(f.state);await index.scan(f.sessions);index.close();const {plan,backup}=await prepareFor(f,'sqlite','guard-backup'),before=await readSqliteSnapshot(f.db);

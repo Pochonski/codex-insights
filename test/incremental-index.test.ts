@@ -74,16 +74,18 @@ describe('incremental JSONL indexing', () => {
       index.close();
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
-  it('reads only appended bytes and does not duplicate cumulative counters', async () => {
+  it('reads appended bytes plus a bounded prefix check and does not duplicate cumulative counters', async () => {
     const f = fixture();
     try {
       writeFileSync(f.file, usage(100, '2026-10-15T00:00:00Z') + '\n');
       const index = new SessionIndex(f.state);
       const first = await index.scan(f.root);
+      const priorSize=statSync(f.file).size;
       appendFileSync(f.file, usage(150, '2026-10-15T00:01:00Z') + '\n');
       const second = await index.scan(f.root);
       expect(first.metrics.bytesRead).toBeGreaterThan(0);
-      expect(second.metrics.bytesRead).toBeLessThan(statSync(f.file).size);
+      expect(second.metrics.bytesRead).toBe(priorSize+Buffer.byteLength(usage(150, '2026-10-15T00:01:00Z') + '\n'));
+      expect(second.metrics.filesModified).toBe(1);
       expect(aggregate(second.events).total.inputTokens).toBe(150);
       index.close();
     } finally { rmSync(f.dir, { recursive: true, force: true }); }
@@ -216,7 +218,7 @@ describe('incremental JSONL indexing', () => {
         expect(scan.warnings.join(' ')).toContain('oversized JSONL line');
         expect(scan.events.map(event => event.inputTokens)).toEqual([50]);
         const again = await index.scan(f.root);
-        expect(again.metrics.bytesRead).toBe(0);
+        expect(again.metrics.bytesRead).toBe(4096); // bounded rewrite check; the oversized line is not replayed
         expect(again.metrics.eventsNew).toBe(0);
       } finally { index.close(); }
     } finally { rmSync(f.dir, { recursive: true, force: true }); }

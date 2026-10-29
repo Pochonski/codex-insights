@@ -17,6 +17,15 @@ describe('quota adapter',()=>{
   const result=normalizeQuotas(account,{...limits,rateLimitsByLimitId:{codex:limits.rateLimits,other:{...limits.rateLimits,limitId:'other',limitName:'Other',primary:{usedPercent:40,windowDurationMins:60,resetsAt:1790000000}}}});
   expect(result.buckets.map(b=>b.id)).toEqual(['codex','other']);
  });
+ it('retains the legacy codex bucket when a partial multi-bucket response omits it',()=>{
+  const other={...limits.rateLimits,limitId:'other',limitName:'Other',primary:{usedPercent:40,windowDurationMins:60,resetsAt:1790000000}};
+  const result=normalizeQuotas(account,{...limits,rateLimitsByLimitId:{other}});
+  expect(result.buckets.map(b=>b.id)).toEqual(['other','codex']);
+ });
+ it('ignores an out-of-range reset timestamp without discarding the quota window',()=>{
+  const result=normalizeQuotas(account,{...limits,rateLimits:{...limits.rateLimits,primary:{usedPercent:42,windowDurationMins:300,resetsAt:1e15}}});
+  expect(result.buckets[0].windows[0]).toMatchObject({usedPercent:42,resetAt:null});
+ });
  it('does not send account email to the dashboard',()=>{
   const result=normalizeQuotas(account,limits);
   expect(JSON.stringify(result)).not.toContain('should-not-be-rendered@example.com');

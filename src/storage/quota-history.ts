@@ -20,7 +20,11 @@ export class QuotaHistoryStore {
   mkdirSync(this.storageDirectory,{recursive:true,mode:0o700});
   let sqlite:typeof import('node:sqlite')|null=null;
   try{sqlite=await import('node:sqlite');}catch(error){const code=(error as {code?:string}).code;if(code!=='ERR_UNKNOWN_BUILTIN_MODULE'&&code!=='ERR_MODULE_NOT_FOUND')throw error;}
-  if(sqlite){let db:DatabaseLike|null=null;try{db=new sqlite.DatabaseSync(path.join(this.storageDirectory,'insights.sqlite')) as unknown as DatabaseLike;
+  if(sqlite){let db:DatabaseLike|null=null;try{const sqlitePath=path.join(this.storageDirectory,'insights.sqlite');
+   // A malformed sole JSON store must remain unavailable; never create an empty SQLite
+   // database that would make an apparent recovery indistinguishable from lost history.
+   if(!existsSync(sqlitePath)&&existsSync(this.filepath)){try{const prior:unknown=JSON.parse(readFileSync(this.filepath,'utf8'));if(!Array.isArray(prior))throw new Error('Invalid quota history format');}catch{this._error='The quota history JSON is invalid. The original file was preserved.';throw new Error(this._error);}}
+   db=new sqlite.DatabaseSync(sqlitePath) as unknown as DatabaseLike;
    db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS quota_samples(id INTEGER PRIMARY KEY AUTOINCREMENT,account_hash TEXT NOT NULL,observed_at INTEGER NOT NULL,limit_id TEXT NOT NULL,window_kind TEXT NOT NULL,duration_mins INTEGER,used_percent REAL NOT NULL CHECK(used_percent BETWEEN 0 AND 100),reset_at INTEGER,UNIQUE(account_hash,observed_at,limit_id,window_kind));
@@ -28,14 +32,15 @@ export class QuotaHistoryStore {
     INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,strftime('%s','now')); COMMIT;`);
    // Import a prior JSON fallback when a newer VS Code runtime gains node:sqlite.
    if(existsSync(this.filepath)){
-    try{const prior:unknown=JSON.parse(readFileSync(this.filepath,'utf8'));
-     if(!Array.isArray(prior))throw new Error('Invalid quota history format');
-     const insert=db.prepare('INSERT OR IGNORE INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?)');db.exec('BEGIN IMMEDIATE');
-     try{for(const item of prior)if(isRow(item))insert.run(item.accountHash,item.observedAt,item.limitId,item.windowKind,item.windowDurationMins,item.usedPercent,item.resetAt);db.exec('COMMIT');}catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}
-     }
-    catch{try{db.close();}catch{}this._error='The quota history JSON is invalid. The original file was preserved.';throw new Error(this._error);}
+    let prior:unknown;
+    try{prior=JSON.parse(readFileSync(this.filepath,'utf8'));}catch{this._error='The quota history JSON is invalid. SQLite history remains available; the JSON file was preserved.';}
+    if(prior!==undefined){
+     if(!Array.isArray(prior))this._error='The quota history JSON is invalid. SQLite history remains available; the JSON file was preserved.';
+     else{const insert=db.prepare('INSERT OR IGNORE INTO quota_samples(account_hash,observed_at,limit_id,window_kind,duration_mins,used_percent,reset_at) VALUES(?,?,?,?,?,?,?)');db.exec('BEGIN IMMEDIATE');
+      try{for(const item of prior)if(isRow(item))insert.run(item.accountHash,item.observedAt,item.limitId,item.windowKind,item.windowDurationMins,item.usedPercent,item.resetAt);db.exec('COMMIT');}catch(error){try{db.exec('ROLLBACK');}catch{}throw error;}}
+    }
    }
-   this.db=db;this._error=null;return true;
+   this.db=db;return true;
   }catch(error){try{db?.close();}catch{}if(this._error)throw error;this._error='The SQLite quota database could not be opened. The original file was preserved.';throw new Error(this._error);}}
   try{const raw=existsSync(this.filepath)?JSON.parse(readFileSync(this.filepath,'utf8')) as unknown:[];if(!Array.isArray(raw))throw new Error();this.fallback=raw.filter(isRow);this._error=null;}catch{this._error='The quota history JSON is invalid. The original file was preserved.';throw new Error(this._error);}
   return true;
@@ -52,7 +57,7 @@ export class QuotaHistoryStore {
  read(accountId:string|null,limitId:string,duration:number,sinceHours=24):QuotaPoint[]{
   if(!accountId)return [];const hash=QuotaHistoryStore.accountHash(accountId),since=Math.floor(Date.now()/1000)-sinceHours*3600;
   let result:QuotaPoint[]=[];
-  if(this.db)result=this.db.prepare('SELECT observed_at,used_percent,duration_mins,limit_id,window_kind,reset_at FROM quota_samples WHERE account_hash=? AND limit_id=? AND duration_mins=? AND observed_at>=? ORDER BY observed_at ASC LIMIT 30000').all(hash,limitId,duration,since).map(item=>{const r=item as Record<string,unknown>;return {observedAt:Number(r.observed_at),usedPercent:Number(r.used_percent),windowDurationMins:r.duration_mins===null?null:Number(r.duration_mins),limitId:String(r.limit_id),windowKind:String(r.window_kind),resetAt:r.reset_at===null?null:Number(r.reset_at)};});
+  if(this.db)result=this.db.prepare('SELECT observed_at,used_percent,duration_mins,limit_id,window_kind,reset_at FROM quota_samples WHERE account_hash=? AND limit_id=? AND duration_mins=? AND observed_at>=? ORDER BY observed_at DESC LIMIT 30000').all(hash,limitId,duration,since).reverse().map(item=>{const r=item as Record<string,unknown>;return {observedAt:Number(r.observed_at),usedPercent:Number(r.used_percent),windowDurationMins:r.duration_mins===null?null:Number(r.duration_mins),limitId:String(r.limit_id),windowKind:String(r.window_kind),resetAt:r.reset_at===null?null:Number(r.reset_at)};});
   else if(this.fallback)result=this.fallback.filter(r=>r.accountHash===hash&&r.limitId===limitId&&r.windowDurationMins===duration&&r.observedAt>=since).map(({accountHash:_private,...point})=>point);
   return downsample(result,650);
  }

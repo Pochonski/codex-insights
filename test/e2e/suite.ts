@@ -123,4 +123,9 @@ export async function run(): Promise<void> {
   await waitFor(async () => !(await state()).mini.created,'Mini Panel disposal');
   await vscode.commands.executeCommand('codexInsights.openMiniPanel');
   await waitFor(async () => {mini=(await state()).mini;return mini.created&&mini.ready&&mini.opens===2;},'Mini Panel reopen');
+  if (process.env.CODEX_INSIGHTS_E2E_HOLD === '1') {
+    await vscode.commands.executeCommand('codexInsights.openDashboard');
+    void vscode.window.showInformationMessage('Synthetic Codex Insights QA profile. Close this VS Code window to clean up the temporary profile.');
+    await new Promise<void>(() => {});
+  }
 }

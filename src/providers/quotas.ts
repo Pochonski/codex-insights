@@ -21,7 +21,8 @@ export function staleQuota(previous:QuotaStatus,message:string,connectionState:C
 function normalizeWindow(kind:QuotaWindow['kind'],window:RateLimitWindow|null):QuotaWindow|null{
  if(!window||!Number.isFinite(window.usedPercent))return null;
  const secs=window.resetsAt;
- return {kind,durationMinutes:typeof window.windowDurationMins==='number'?window.windowDurationMins:null,usedPercent:Math.max(0,Math.min(100,window.usedPercent)),resetAt:typeof secs==='number'&&Number.isFinite(secs)?new Date(secs*1000).toISOString():null};
+ const resetDate=typeof secs==='number'&&Number.isFinite(secs)?new Date(secs*1000):null;
+ return {kind,durationMinutes:typeof window.windowDurationMins==='number'?window.windowDurationMins:null,usedPercent:Math.max(0,Math.min(100,window.usedPercent)),resetAt:resetDate&&Number.isFinite(resetDate.getTime())?resetDate.toISOString():null};
 }
 function bucket(id:string,snapshot:RateLimitSnapshot):QuotaBucket{
  const windows=[normalizeWindow('primary',snapshot.primary),normalizeWindow('secondary',snapshot.secondary)].filter((w):w is QuotaWindow=>w!==null);
@@ -33,7 +34,9 @@ export function normalizeQuotas(account:GetAccountResponse,limits:GetAccountRate
  const entries=Object.entries(limits?.rateLimitsByLimitId||{}).filter((entry):entry is [string,RateLimitSnapshot]=>!!entry[1]&&typeof entry[1]==='object');
  // Use legacy bucket only when it is not represented in the multi-bucket response.
  const legacy=limits?.rateLimits;
- const snapshots=entries.length?entries:legacy?[[legacy.limitId||'codex',legacy] as const]:[];
+ const legacyId=legacy?.limitId||'codex';
+ const snapshots:[string,RateLimitSnapshot][]=entries;
+ if(legacy&&!snapshots.some(([id])=>id===legacyId))snapshots.push([legacyId,legacy]);
  const buckets=snapshots.map(([id,s])=>bucket(id,s)).filter(b=>b.windows.length>0);
  const plan=account.account.planType==='unknown'?legacy?.planType:account.account.planType;
  return {state:'connected',plan:plan||null,buckets,ordinaryUsageAllowed:typeof limits?.ordinaryUsageAllowed==='boolean'?limits.ordinaryUsageAllowed:null,fetchedAt:new Date().toISOString(),message:buckets.length?null:'No quota windows were returned by Codex',connectionState:'connected'};

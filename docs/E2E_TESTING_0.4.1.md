@@ -16,6 +16,8 @@ xvfb-run -a npm run test:e2e
 
 CI runs the same command through Xvfb. The first execution downloads the VS Code test binary into the ignored `.vscode-test/` cache. Set a breakpoint in `test/e2e/suite.ts` and run the command from VS Code to debug the Extension Development Host.
 
+To inspect the synthetic dashboard and hover manually in a real, isolated VS Code window, run `CODEX_INSIGHTS_E2E_HOLD=1 npm run test:e2e`. The suite completes its assertions and keeps its temporary Test-mode window open until you close it. Close the window normally so the runner removes its temporary user-data, extensions, and workspace directories. The hold flag applies only to the development test runner; it is not included in the VSIX or the production extension. CI never sets it.
+
 The test fixture is active only when VS Code supplies ExtensionMode.Test. It never runs in a normal extension installation. It provides synthetic session and quota observations and never starts Codex App Server, reads a Codex session directory, reads auth.json, or sends a model request.
 
 ## What the real Electron test verifies
