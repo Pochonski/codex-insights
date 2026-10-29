@@ -133,7 +133,7 @@ The command:
 8. rescans sources before success; any detected change causes restoration from the verified backup.
 
 SQLite and JSON cannot share one filesystem transaction. The staged fallback plus automatic restoration provides rollback across the two stores. A persistent backup remains after success.
-If automatic restoration itself fails, the maintenance lock remains in place to prevent extension writes to a potentially mixed state. Keep VS Code closed and recover from the verified backup before removing that lock manually.
+If the process exits abruptly or automatic restoration fails, the maintenance lock remains in place to prevent extension writes to a potentially mixed state. Keep VS Code and Codex closed. Use the explicit `recover` command below; do not remove the lock manually. A second recovery process is excluded by a private claim file. A failed recovery retains the original lock.
 
 ## Restoration
 
@@ -148,5 +148,15 @@ npm run reset:history:execute -- restore \
 ```
 
 Restoration verifies the manifest, removes incompatible WAL/SHM files, restores SQLite and fallback state together, reruns `PRAGMA integrity_check`, and verifies the restored snapshot digest before releasing the maintenance lock.
+
+If an interrupted reset left the maintenance lock, use the same arguments with `recover` instead of `restore`. This mode requires an existing lock, the exact confirmation phrase, stopped writer processes, and a verified backup. It keeps the original lock until the restore succeeds:
+
+```bash
+npm run reset:history:execute -- recover \
+  --storage-dir "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights" \
+  --state-file "$HOME/.config/Code/User/globalStorage/codex-insights-local.codex-insights/sessions-index.json" \
+  --backup-dir "$HOME/CodexInsightsBackups/before-local-reset-YYYYMMDD-HHMMSS" \
+  --confirm "RESTORE CODEX INSIGHTS BACKUP AND DISCARD NEWER LOCAL STATISTICS"
+```
 
 Restoring an older backup discards local statistics written after that backup. It does not alter Codex conversations or official quota data.

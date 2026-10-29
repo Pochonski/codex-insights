@@ -24,7 +24,7 @@ try {
     version: '1.90.0',
     extensionDevelopmentPath: root,
     extensionTestsPath: path.join(root, 'dist', 'e2e', 'suite.js'),
-    extensionTestsEnv: { CODEX_INSIGHTS_E2E: '1' },
+    extensionTestsEnv: { CODEX_INSIGHTS_E2E: '1', CODEX_INSIGHTS_E2E_HOLD: process.env.CODEX_INSIGHTS_E2E_HOLD === '1' ? '1' : '' },
     launchArgs: [
       '--folder-uri=' + pathToFileURL(workspace).toString(),
       '--user-data-dir=' + userData,
